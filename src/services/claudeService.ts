@@ -5,11 +5,44 @@ import * as path from 'path';
 
 export class ClaudeService {
   private client: Anthropic;
+  private templateCache: Map<ClinicMode, string> = new Map();
 
   constructor(apiKey: string) {
     this.client = new Anthropic({
       apiKey: apiKey,
     });
+    this.loadTemplates();
+  }
+
+  /**
+   * Загрузка готовых шаблонов из файлов
+   */
+  private loadTemplates(): void {
+    try {
+      const dinastiyaPath = path.join(__dirname, '../../data/templates/dinastiya_template.txt');
+      const pskpPath = path.join(__dirname, '../../data/templates/pskp_template.txt');
+
+      if (fs.existsSync(dinastiyaPath)) {
+        const template = fs.readFileSync(dinastiyaPath, 'utf-8');
+        this.templateCache.set(ClinicMode.DINASTIYA, template);
+      }
+
+      if (fs.existsSync(pskpPath)) {
+        const template = fs.readFileSync(pskpPath, 'utf-8');
+        this.templateCache.set(ClinicMode.PSKP, template);
+      }
+
+      console.log('✓ Templates loaded successfully');
+    } catch (error) {
+      console.error('Error loading templates:', error);
+    }
+  }
+
+  /**
+   * Получение готового шаблона для клиники
+   */
+  private getBaseTemplate(clinic: ClinicMode): string {
+    return this.templateCache.get(clinic) || '';
   }
 
   /**
@@ -76,8 +109,8 @@ export class ClaudeService {
   }
 
   /**
-   * Генерация шаблона осмотра
-   * Использует Claude Opus для создания детального медицинского шаблона
+   * Генерация шаблона осмотра на основе готового шаблона
+   * Использует Claude Opus для заполнения готового медицинского шаблона
    */
   async generateExaminationTemplate(
     patientData: PatientData,
@@ -85,31 +118,46 @@ export class ClaudeService {
     archiveTemplates: string[] = []
   ): Promise<string> {
     try {
-      const clinicTemplates = this.getClinicTemplateInstructions(clinic);
+      const baseTemplate = this.getBaseTemplate(clinic);
+
+      if (!baseTemplate) {
+        throw new Error(`Шаблон для клиники ${clinic} не найден`);
+      }
 
       let archiveContext = '';
       if (archiveTemplates.length > 0) {
-        archiveContext = `\n\nАрхивные шаблоны для справки:\n${archiveTemplates.join('\n---\n')}`;
+        archiveContext = `\n\nПРИМЕРЫ ПОХОЖИХ ОСМОТРОВ ИЗ АРХИВА (для справки):\n${archiveTemplates.join('\n---\n')}`;
       }
 
       const message = await this.client.messages.create({
         model: 'claude-opus-4-20250514',
-        max_tokens: 4096,
+        max_tokens: 8192,
         messages: [
           {
             role: 'user',
-            content: `Создайте шаблон медицинского осмотра для клиники "${clinic}".
+            content: `Вы медицинский ассистент. Ваша задача - заполнить готовый шаблон медицинского осмотра.
 
-Данные пациента:
+ДАННЫЕ ПАЦИЕНТА:
 - ФИО: ${patientData.fullName}
 - Дата рождения: ${patientData.birthDate}
 ${patientData.snils ? `- СНИЛС: ${patientData.snils}` : ''}
 - Диагноз: ${patientData.diagnosis}
 
-${clinicTemplates}
+ГОТОВЫЙ ШАБЛОН КЛИНИКИ:
+${baseTemplate}
+
 ${archiveContext}
 
-Пожалуйста, создайте полный шаблон медицинского осмотра с учетом диагноза и стандартов клиники.`,
+ИНСТРУКЦИИ:
+1. Используйте ТОЧНО ЭТОТ шаблон, не изменяйте его структуру
+2. Заполните все разделы шаблона реалистичными медицинскими данными
+3. Вставьте данные пациента (ФИО, дата рождения, СНИЛС) в соответствующие места
+4. Заполните разделы с учетом указанного диагноза: ${patientData.diagnosis}
+5. Используйте примеры из архива как справочный материал для стиля заполнения
+6. НЕ добавляйте лишний текст до или после шаблона
+7. Верните ТОЛЬКО заполненный шаблон
+
+Заполните шаблон:`,
           },
         ],
       });
@@ -127,69 +175,56 @@ ${archiveContext}
   }
 
   /**
-   * Получение инструкций для конкретной клиники
+   * Исправление шаблона на основе комментариев пользователя
    */
-  private getClinicTemplateInstructions(clinic: ClinicMode): string {
-    const templates: Record<ClinicMode, string> = {
-      [ClinicMode.DINASTIYA]: `
-Клиника "Династия" использует следующую структуру осмотра:
+  async correctTemplate(
+    currentTemplate: string,
+    patientData: PatientData,
+    corrections: string
+  ): Promise<string> {
+    try {
+      const message = await this.client.messages.create({
+        model: 'claude-opus-4-20250514',
+        max_tokens: 8192,
+        messages: [
+          {
+            role: 'user',
+            content: `Вы медицинский ассистент. У вас есть готовый шаблон медицинского осмотра, который нужно исправить.
 
-1. АНАМНЕЗ
-   - Жалобы
-   - История заболевания
-   - Перенесенные заболевания
-   - Аллергологический анамнез
+ТЕКУЩИЙ ШАБЛОН:
+${currentTemplate}
 
-2. ОБЪЕКТИВНЫЙ ОСМОТР
-   - Общее состояние
-   - Кожные покровы
-   - Лимфатические узлы
-   - Система дыхания
-   - Сердечно-сосудистая система
-   - Пищеварительная система
-   - Мочевыделительная система
+ДАННЫЕ ПАЦИЕНТА:
+- ФИО: ${patientData.fullName}
+- Дата рождения: ${patientData.birthDate}
+${patientData.snils ? `- СНИЛС: ${patientData.snils}` : ''}
+- Диагноз: ${patientData.diagnosis}
 
-3. ПРЕДВАРИТЕЛЬНЫЙ ДИАГНОЗ
+КОММЕНТАРИИ ДЛЯ ИСПРАВЛЕНИЯ:
+${corrections}
 
-4. ПЛАН ОБСЛЕДОВАНИЯ
+ИНСТРУКЦИИ:
+1. Внимательно прочитайте комментарии пользователя
+2. Внесите необходимые исправления в шаблон
+3. Сохраните структуру и формат шаблона
+4. НЕ добавляйте лишний текст до или после шаблона
+5. Верните ТОЛЬКО исправленный шаблон
 
-5. ПЛАН ЛЕЧЕНИЯ
+Исправленный шаблон:`,
+          },
+        ],
+      });
 
-6. РЕКОМЕНДАЦИИ
-`,
-      [ClinicMode.PSKP]: `
-Клиника "ПСКП" использует следующую структуру осмотра:
+      const response = message.content[0];
+      if (response.type === 'text') {
+        return response.text;
+      }
 
-1. ЖАЛОБЫ И АНАМНЕЗ
-   - Основные жалобы
-   - Anamnesis morbi
-   - Anamnesis vitae
-   - Эпидемиологический анамнез
-
-2. СТАТУС PRAESENS
-   - Общее состояние и сознание
-   - Положение пациента
-   - Телосложение и питание
-   - Кожа и видимые слизистые
-   - Подкожно-жировая клетчатка
-   - Лимфоузлы
-   - Мышцы и кости
-   - Органы дыхания
-   - Сердечно-сосудистая система
-   - Органы пищеварения
-   - Мочеполовая система
-   - Нервная система
-
-3. ДИАГНОЗ
-
-4. ОБСЛЕДОВАНИЕ
-
-5. НАЗНАЧЕНИЯ
-
-6. ДНЕВНИКИ НАБЛЮДЕНИЯ
-`,
-    };
-
-    return templates[clinic];
+      return '';
+    } catch (error) {
+      console.error('Error correcting template:', error);
+      throw error;
+    }
   }
+
 }

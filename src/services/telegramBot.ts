@@ -2,7 +2,7 @@ import TelegramBot from 'node-telegram-bot-api';
 import axios from 'axios';
 import { ClaudeService } from './claudeService';
 import { ArchiveService } from './archiveService';
-import { PatientData, ClinicMode, BotContext, ExaminationTemplate } from '../types';
+import { PatientData, ClinicMode, BotContext, BotState, ExaminationTemplate } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
 export class MedicalBot {
@@ -28,8 +28,17 @@ export class MedicalBot {
       const chatId = msg.chat.id;
       this.userContexts.set(chatId, {
         clinic: ClinicMode.DINASTIYA,
-        awaitingData: false,
+        state: BotState.IDLE,
       });
+
+      const keyboard = {
+        inline_keyboard: [
+          [
+            { text: '🏥 Династия', callback_data: 'clinic_dinastiya' },
+            { text: '🏥 ПСКП', callback_data: 'clinic_pskp' },
+          ],
+        ],
+      };
 
       this.bot.sendMessage(
         chatId,
@@ -37,16 +46,17 @@ export class MedicalBot {
 
 Я помогу создать шаблон медицинского осмотра.
 
-Доступные команды:
-/clinic_dinastiya - переключить на клинику "Династия"
-/clinic_pskp - переключить на клинику "ПСКП"
-/stats - статистика архива
-/help - помощь
+Выберите клинику, затем отправьте:
+• Фото документа (СНИЛС)
+• Или текстовые данные в формате:
+  ФИО: Иванов Иван Иванович
+  Дата рождения: 01.01.1990
+  Диагноз: Описание диагноза
 
-Отправьте фото документа (СНИЛС) или введите данные пациента вручную в формате:
-ФИО: Иванов Иван Иванович
-Дата рождения: 01.01.1990
-Диагноз: Описание диагноза`
+Команды:
+/stats - статистика архива
+/help - помощь`,
+        { reply_markup: keyboard }
       );
     });
 
@@ -56,10 +66,11 @@ export class MedicalBot {
         msg.chat.id,
         `Помощь по использованию бота:
 
-1. Выберите клинику командой /clinic_dinastiya или /clinic_pskp
-2. Отправьте фото документа (СНИЛС) или введите данные текстом
-3. Бот распознает данные и создаст шаблон осмотра
-4. Шаблон будет сохранен в архиве
+1. Выберите клинику кнопками
+2. Отправьте фото документа (СНИЛС) или данные текстом
+3. Проверьте созданный шаблон
+4. Подтвердите или отправьте комментарии для правок
+5. Шаблон будет сохранен в архиве
 
 Формат текстовых данных:
 ФИО: Иванов Иван Иванович
@@ -67,21 +78,6 @@ export class MedicalBot {
 СНИЛС: 123-456-789 00 (необязательно)
 Диагноз: Описание диагноза`
       );
-    });
-
-    // Переключение клиники
-    this.bot.onText(/\/clinic_dinastiya/, (msg) => {
-      const chatId = msg.chat.id;
-      const context = this.getOrCreateContext(chatId);
-      context.clinic = ClinicMode.DINASTIYA;
-      this.bot.sendMessage(chatId, '✅ Выбрана клиника "Династия"');
-    });
-
-    this.bot.onText(/\/clinic_pskp/, (msg) => {
-      const chatId = msg.chat.id;
-      const context = this.getOrCreateContext(chatId);
-      context.clinic = ClinicMode.PSKP;
-      this.bot.sendMessage(chatId, '✅ Выбрана клиника "ПСКП"');
     });
 
     // Статистика
@@ -101,6 +97,11 @@ export class MedicalBot {
       }
     });
 
+    // Обработка callback кнопок
+    this.bot.on('callback_query', async (query) => {
+      await this.handleCallbackQuery(query);
+    });
+
     // Обработка фото
     this.bot.on('photo', async (msg) => {
       await this.handlePhoto(msg);
@@ -115,11 +116,90 @@ export class MedicalBot {
   }
 
   /**
+   * Обработка callback запросов (нажатия на кнопки)
+   */
+  private async handleCallbackQuery(query: TelegramBot.CallbackQuery): Promise<void> {
+    const chatId = query.message?.chat.id;
+    if (!chatId) return;
+
+    const data = query.data;
+    const context = this.getOrCreateContext(chatId);
+
+    try {
+      if (data === 'clinic_dinastiya') {
+        context.clinic = ClinicMode.DINASTIYA;
+        await this.bot.answerCallbackQuery(query.id);
+        await this.bot.sendMessage(chatId, '✅ Выбрана клиника "Династия"');
+      } else if (data === 'clinic_pskp') {
+        context.clinic = ClinicMode.PSKP;
+        await this.bot.answerCallbackQuery(query.id);
+        await this.bot.sendMessage(chatId, '✅ Выбрана клиника "ПСКП"');
+      } else if (data === 'confirm_template') {
+        await this.handleConfirmTemplate(chatId, context);
+        await this.bot.answerCallbackQuery(query.id, { text: 'Шаблон сохранен!' });
+      } else if (data === 'request_corrections') {
+        context.state = BotState.AWAITING_CORRECTIONS;
+        await this.bot.answerCallbackQuery(query.id);
+        await this.bot.sendMessage(
+          chatId,
+          '✏️ Отправьте комментарии для исправления шаблона.\n\nНапример:\n"Изменить диагноз на...\nДобавить в анамнез...\nУбрать из назначений..."'
+        );
+      }
+    } catch (error) {
+      console.error('Error handling callback:', error);
+      await this.bot.answerCallbackQuery(query.id, { text: 'Ошибка обработки' });
+    }
+  }
+
+  /**
+   * Подтверждение и сохранение шаблона
+   */
+  private async handleConfirmTemplate(chatId: number, context: BotContext): Promise<void> {
+    if (!context.currentTemplate) {
+      await this.bot.sendMessage(chatId, '❌ Нет шаблона для сохранения');
+      return;
+    }
+
+    try {
+      // Сохраняем в архив
+      const template: ExaminationTemplate = {
+        id: uuidv4(),
+        clinic: context.clinic,
+        patientData: context.currentTemplate.patientData,
+        content: context.currentTemplate.content,
+        createdAt: new Date(),
+      };
+
+      await this.archiveService.saveTemplate(template);
+
+      await this.bot.sendMessage(
+        chatId,
+        `✅ Шаблон успешно сохранен в архив!
+
+Можете отправить данные следующего пациента.`
+      );
+
+      // Очищаем контекст
+      context.state = BotState.IDLE;
+      context.currentTemplate = undefined;
+      context.patientData = undefined;
+    } catch (error) {
+      console.error('Error saving template:', error);
+      await this.bot.sendMessage(chatId, '❌ Ошибка сохранения шаблона');
+    }
+  }
+
+  /**
    * Обработка фото документа
    */
   private async handlePhoto(msg: TelegramBot.Message): Promise<void> {
     const chatId = msg.chat.id;
     const context = this.getOrCreateContext(chatId);
+
+    // Игнорируем фото если ожидаем подтверждения или правок
+    if (context.state === BotState.AWAITING_CONFIRMATION || context.state === BotState.AWAITING_CORRECTIONS) {
+      return;
+    }
 
     try {
       await this.bot.sendMessage(chatId, '🔍 Обрабатываю фото документа...');
@@ -183,6 +263,19 @@ export class MedicalBot {
     if (!msg.text) return;
 
     try {
+      // Если ожидаем комментарии для правок
+      if (context.state === BotState.AWAITING_CORRECTIONS) {
+        await this.handleCorrections(chatId, context, msg.text);
+        return;
+      }
+
+      // Если ожидаем подтверждения, игнорируем текстовые сообщения
+      if (context.state === BotState.AWAITING_CONFIRMATION) {
+        await this.bot.sendMessage(chatId, 'Пожалуйста, используйте кнопки для подтверждения или запроса правок.');
+        return;
+      }
+
+      // Обычная обработка данных пациента
       await this.bot.sendMessage(chatId, '⚙️ Обрабатываю данные...');
 
       // Парсим текстовые данные
@@ -205,6 +298,23 @@ export class MedicalBot {
         return;
       }
 
+      // Генерируем шаблон
+      await this.generateAndShowTemplate(chatId, context, patientData);
+    } catch (error) {
+      console.error('Error handling text message:', error);
+      await this.bot.sendMessage(chatId, '❌ Ошибка обработки сообщения. Попробуйте еще раз.');
+    }
+  }
+
+  /**
+   * Генерация и показ шаблона с кнопками подтверждения
+   */
+  private async generateAndShowTemplate(
+    chatId: number,
+    context: BotContext,
+    patientData: PatientData
+  ): Promise<void> {
+    try {
       // Ищем похожие шаблоны в архиве
       await this.bot.sendMessage(chatId, '🔎 Ищу похожие шаблоны в архиве...');
       const similarTemplates = await this.archiveService.getSimilarTemplates(
@@ -221,29 +331,86 @@ export class MedicalBot {
         similarTemplates
       );
 
-      // Сохраняем в архив
-      const template: ExaminationTemplate = {
-        id: uuidv4(),
-        clinic: context.clinic,
-        patientData,
+      // Сохраняем в контекст
+      context.currentTemplate = {
         content: templateContent,
-        createdAt: new Date(),
+        patientData: patientData,
+      };
+      context.state = BotState.AWAITING_CONFIRMATION;
+
+      // Создаем кнопки для подтверждения
+      const keyboard = {
+        inline_keyboard: [
+          [
+            { text: '✅ Всё ОК, сохранить', callback_data: 'confirm_template' },
+            { text: '✏️ Нужны правки', callback_data: 'request_corrections' },
+          ],
+        ],
       };
 
-      await this.archiveService.saveTemplate(template);
-
-      // Отправляем результат
+      // Отправляем шаблон
       await this.bot.sendMessage(
         chatId,
         `✅ Шаблон осмотра создан для клиники "${context.clinic}"!\n\n${templateContent}`,
-        { parse_mode: 'Markdown' }
+        { reply_markup: keyboard }
       );
 
-      // Очищаем контекст
-      context.patientData = undefined;
+      await this.bot.sendMessage(
+        chatId,
+        '👆 Проверьте шаблон и выберите действие:',
+        { reply_markup: keyboard }
+      );
     } catch (error) {
-      console.error('Error handling text message:', error);
+      console.error('Error generating template:', error);
       await this.bot.sendMessage(chatId, '❌ Ошибка создания шаблона. Попробуйте еще раз.');
+      context.state = BotState.IDLE;
+    }
+  }
+
+  /**
+   * Обработка комментариев для правок
+   */
+  private async handleCorrections(chatId: number, context: BotContext, corrections: string): Promise<void> {
+    if (!context.currentTemplate) {
+      await this.bot.sendMessage(chatId, '❌ Нет шаблона для исправления');
+      context.state = BotState.IDLE;
+      return;
+    }
+
+    try {
+      await this.bot.sendMessage(chatId, '🔄 Вношу исправления...');
+
+      // Исправляем шаблон
+      const correctedTemplate = await this.claudeService.correctTemplate(
+        context.currentTemplate.content,
+        context.currentTemplate.patientData,
+        corrections
+      );
+
+      // Обновляем в контексте
+      context.currentTemplate.content = correctedTemplate;
+      context.state = BotState.AWAITING_CONFIRMATION;
+
+      // Создаем кнопки для подтверждения
+      const keyboard = {
+        inline_keyboard: [
+          [
+            { text: '✅ Всё ОК, сохранить', callback_data: 'confirm_template' },
+            { text: '✏️ Еще правки', callback_data: 'request_corrections' },
+          ],
+        ],
+      };
+
+      // Отправляем исправленный шаблон
+      await this.bot.sendMessage(chatId, `✅ Шаблон исправлен!\n\n${correctedTemplate}`, {
+        reply_markup: keyboard,
+      });
+
+      await this.bot.sendMessage(chatId, '👆 Проверьте исправленный шаблон:', { reply_markup: keyboard });
+    } catch (error) {
+      console.error('Error correcting template:', error);
+      await this.bot.sendMessage(chatId, '❌ Ошибка исправления шаблона. Попробуйте еще раз.');
+      context.state = BotState.AWAITING_CONFIRMATION;
     }
   }
 
@@ -294,7 +461,7 @@ export class MedicalBot {
     if (!this.userContexts.has(chatId)) {
       this.userContexts.set(chatId, {
         clinic: ClinicMode.DINASTIYA,
-        awaitingData: false,
+        state: BotState.IDLE,
       });
     }
     return this.userContexts.get(chatId)!;

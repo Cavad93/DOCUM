@@ -18,8 +18,19 @@ export enum ClinicMode {
   PSKP = 'pskp'
 }
 
+export enum BotState {
+  IDLE = 'idle',
+  AWAITING_DATA = 'awaiting_data',
+  AWAITING_CONFIRMATION = 'awaiting_confirmation',
+  AWAITING_CORRECTIONS = 'awaiting_corrections',
+}
+
 export interface BotContext {
   clinic: ClinicMode;
-  awaitingData: boolean;
+  state: BotState;
   patientData?: Partial<PatientData>;
+  currentTemplate?: {
+    content: string;
+    patientData: PatientData;
+  };
 }
