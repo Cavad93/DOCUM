@@ -1,0 +1,35 @@
+{
+  "name": "telegram-medical-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for medical examination templates using Claude API",
+  "main": "dist/index.js",
+  "scripts": {
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "keywords": [
+    "telegram",
+    "medical",
+    "claude",
+    "ai",
+    "ocr"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0",
+    "axios": "^1.7.9",
+    "uuid": "^11.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/node-telegram-bot-api": "^0.64.7",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.7.2",
+    "ts-node": "^10.9.2"
+  }
+}
