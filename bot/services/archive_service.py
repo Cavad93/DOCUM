@@ -254,22 +254,65 @@ class ArchiveService:
 
         return template_path if template_path.exists() else None
 
+    def _parse_markdown_formatting(self, text: str) -> list:
+        """
+        Парсит markdown-разметку и возвращает список сегментов с форматированием
+
+        Поддерживает:
+        - **текст** = жирный шрифт
+        - обычный текст = обычный шрифт
+
+        Returns:
+            List[(text, is_bold)]
+        """
+        import re
+        segments = []
+
+        # Регулярное выражение для поиска **текст**
+        pattern = r'\*\*(.+?)\*\*'
+        last_end = 0
+
+        for match in re.finditer(pattern, text):
+            # Добавляем обычный текст до жирного
+            if match.start() > last_end:
+                normal_text = text[last_end:match.start()]
+                if normal_text:
+                    segments.append((normal_text, False))
+
+            # Добавляем жирный текст
+            bold_text = match.group(1)
+            segments.append((bold_text, True))
+            last_end = match.end()
+
+        # Добавляем оставшийся обычный текст
+        if last_end < len(text):
+            remaining = text[last_end:]
+            if remaining:
+                segments.append((remaining, False))
+
+        # Если ничего не нашли, весь текст обычный
+        if not segments:
+            segments.append((text, False))
+
+        return segments
+
     def _replace_document_content(self, doc: Document, new_content: str) -> None:
         """
         Заменяет текстовое содержимое документа, сохраняя форматирование и структуру
 
         Стратегия:
         1. Находим начало основного содержимого (после логотипа и заголовка)
-        2. Сохраняем стиль первого параграфа как эталон
+        2. Сохраняем базовый стиль шрифта из шаблона
         3. Удаляем все старые параграфы содержимого
-        4. Вставляем новый текст от Claude построчно с сохранением стиля
+        4. Парсим markdown-разметку от Claude и вставляем с правильным форматированием
 
         Args:
             doc: Документ Word
-            new_content: Новое текстовое содержимое
+            new_content: Новое текстовое содержимое с markdown-разметкой
         """
+        import re
+
         # Находим индекс, с которого начинается заменяемое содержимое
-        # (пропускаем заголовок документа, логотип и главный заголовок)
         start_index = 0
         reference_paragraph = None
 
@@ -290,24 +333,50 @@ class ArchiveService:
             p = para._element
             p.getparent().remove(p)
 
-        # Добавляем новое содержимое построчно
+        # Получаем базовый стиль шрифта из эталонного параграфа
+        base_font_name = None
+        base_font_size = None
+        if reference_paragraph and reference_paragraph.runs:
+            ref_run = reference_paragraph.runs[0]
+            base_font_name = ref_run.font.name
+            base_font_size = ref_run.font.size
+
+        # Парсим и вставляем новое содержимое
         for line in new_content.split('\n'):
-            new_para = doc.add_paragraph(line)
+            # Проверяем нумерованный список (1., 2., и т.д.)
+            list_match = re.match(r'^(\d+)\.\s+(.+)$', line.strip())
 
-            # Копируем стиль из эталонного параграфа, если он был найден
-            if reference_paragraph is not None:
-                # Копируем стиль параграфа
-                new_para.style = reference_paragraph.style
+            if list_match:
+                # Нумерованный список
+                number = list_match.group(1)
+                text = list_match.group(2)
+                new_para = doc.add_paragraph(style='List Number')
 
-                # Копируем форматирование runs (шрифт, размер, цвет и т.д.)
-                if reference_paragraph.runs and new_para.runs:
-                    ref_run = reference_paragraph.runs[0]
-                    for run in new_para.runs:
-                        run.font.name = ref_run.font.name
-                        run.font.size = ref_run.font.size
-                        run.font.bold = ref_run.font.bold
-                        run.font.italic = ref_run.font.italic
-                        run.font.color.rgb = ref_run.font.color.rgb
+                # Парсим markdown в тексте элемента списка
+                segments = self._parse_markdown_formatting(text)
+                new_para.clear()  # Очищаем дефолтный текст
+
+                for segment_text, is_bold in segments:
+                    run = new_para.add_run(segment_text)
+                    if base_font_name:
+                        run.font.name = base_font_name
+                    if base_font_size:
+                        run.font.size = base_font_size
+                    run.font.bold = is_bold
+            else:
+                # Обычный параграф
+                new_para = doc.add_paragraph()
+
+                # Парсим markdown для определения жирного/обычного текста
+                segments = self._parse_markdown_formatting(line)
+
+                for segment_text, is_bold in segments:
+                    run = new_para.add_run(segment_text)
+                    if base_font_name:
+                        run.font.name = base_font_name
+                    if base_font_size:
+                        run.font.size = base_font_size
+                    run.font.bold = is_bold
 
     def _generate_filename(self, template: ExaminationTemplate) -> str:
         """
