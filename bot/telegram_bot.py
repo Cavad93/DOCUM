@@ -321,16 +321,13 @@ class MedicalBot:
     async def _generate_and_show_template(self, message, user_context: BotContext, patient_data: PatientData):
         """Генерация и показ шаблона с кнопками подтверждения"""
         try:
-            # Ищем похожие шаблоны
-            await message.reply_text("🔎 Ищу похожие шаблоны в архиве...")
-            similar_templates = await self.archive_service.get_similar_templates(
-                patient_data.diagnosis, user_context.clinic, 3
-            )
+            # НЕ ищем шаблоны в архиве - используем только базовый шаблон
+            # Это решает проблему "Message is too long"
 
-            # Генерируем шаблон
+            # Генерируем шаблон на основе базового шаблона
             await message.reply_text("✍️ Создаю шаблон осмотра...")
             template_content = await self.claude_service.generate_examination_template(
-                patient_data, user_context.clinic, similar_templates
+                patient_data, user_context.clinic, archive_templates=None  # НЕ используем архив
             )
 
             # Сохраняем в контекст

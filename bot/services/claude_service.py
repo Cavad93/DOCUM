@@ -286,13 +286,16 @@ class ClaudeService:
         archive_templates: Optional[List[str]] = None,
     ) -> str:
         """
-        Генерация шаблона осмотра на основе готового шаблона
-        Использует Claude Sonnet 4.5 для выбора подходящего шаблона из архива и его заполнения
+        Генерация шаблона осмотра на основе базового шаблона
+        Использует Claude Sonnet 4.5 для заполнения базового шаблона клиники
+
+        ВАЖНО: Архивные шаблоны НЕ используются (решение проблемы "Message is too long")
+        Всегда используется только базовый шаблон клиники
 
         Args:
             patient_data: Данные пациента
             clinic: Режим клиники
-            archive_templates: Похожие шаблоны из архива
+            archive_templates: Не используется (оставлено для совместимости)
 
         Returns:
             Заполненный шаблон осмотра
@@ -300,19 +303,10 @@ class ClaudeService:
         try:
             from datetime import datetime, timedelta
 
-            # Пытаемся выбрать лучший шаблон из архива
-            selected_template = None
-            if archive_templates and len(archive_templates) > 0:
-                selected_template = await self.select_best_template(
-                    patient_data, clinic, archive_templates
-                )
-
-            # Если не удалось выбрать из архива, используем базовый шаблон
-            if not selected_template:
-                selected_template = self._get_base_template(clinic)
-                print(f"✓ Использую базовый шаблон клиники {clinic.value}")
-            else:
-                print(f"✓ Использую выбранный шаблон из архива")
+            # ВСЕГДА используем только базовый шаблон
+            # Архивные шаблоны НЕ отправляются в AI (решение проблемы "Message is too long")
+            selected_template = self._get_base_template(clinic)
+            print(f"✓ Использую базовый шаблон клиники {clinic.value}")
 
             if not selected_template:
                 raise ValueError(f"Шаблон для клиники {clinic.value} не найден")
