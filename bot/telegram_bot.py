@@ -109,7 +109,7 @@ class MedicalBot:
             "  Дата осмотра: 25.12.2025 (необязательно, по умолчанию сегодня)\n"
             "  Начало болезни: 24.12.2025 (необязательно, рассчитывается автоматически)\n\n"
             "Команды:\n"
-            "/stats - статистика архива\n"
+            "/stats - вернуться в главное меню\n"
             "/help - помощь",
             reply_markup=reply_markup,
         )
@@ -139,17 +139,41 @@ class MedicalBot:
         )
 
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команды /stats"""
-        try:
-            stats = await self.archive_service.get_statistics()
-            message = f"📊 Статистика архива:\n\nВсего шаблонов: {stats['total']}\n\n"
+        """Обработка команды /stats - возврат к начальному экрану"""
+        user_id = update.effective_user.id
+        # Сбрасываем контекст пользователя
+        self.user_contexts[user_id] = BotContext(
+            clinic=ClinicMode.DINASTIYA,
+            state=BotState.IDLE,
+        )
 
-            for clinic, count in stats["by_clinic"].items():
-                message += f"{clinic}: {count}\n"
+        # Создаем кнопки выбора клиники
+        keyboard = [
+            [
+                InlineKeyboardButton("🏥 Династия", callback_data="clinic_dinastiya"),
+                InlineKeyboardButton("🏥 ПСКП", callback_data="clinic_pskp"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
 
-            await update.message.reply_text(message)
-        except Exception as e:
-            await update.message.reply_text("❌ Ошибка получения статистики")
+        # Отправляем приветственное сообщение
+        await update.message.reply_text(
+            "Добро пожаловать в медицинский бот! 🏥\n\n"
+            "Я помогу создать шаблон медицинского осмотра с актуальными датами и ЭЛН.\n\n"
+            "Выберите клинику, затем отправьте:\n"
+            "• Фото документа (СНИЛС)\n"
+            "• Или текстовые данные в формате:\n"
+            "  ФИО: Иванов Иван Иванович\n"
+            "  Дата рождения: 01.01.1990\n"
+            "  Диагноз: Острый бронхит\n"
+            "  ЭЛН: 5 дней (необязательно, по умолчанию 3 дня)\n"
+            "  Дата осмотра: 25.12.2025 (необязательно, по умолчанию сегодня)\n"
+            "  Начало болезни: 24.12.2025 (необязательно, рассчитывается автоматически)\n\n"
+            "Команды:\n"
+            "/stats - вернуться в главное меню\n"
+            "/help - помощь",
+            reply_markup=reply_markup,
+        )
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка нажатий на inline кнопки"""
