@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from anthropic import Anthropic
+from docx import Document
 
 from bot.models.types import PatientData, ClinicMode
 
@@ -28,25 +29,58 @@ class ClaudeService:
         self._load_templates()
 
     def _load_templates(self) -> None:
-        """Загрузка готовых шаблонов из файлов"""
+        """Загрузка готовых шаблонов из файлов (.docx или .txt)"""
         try:
             templates_dir = Path(__file__).parent.parent.parent / "data" / "templates"
 
-            # Загрузка шаблона Династии
-            dinastiya_path = templates_dir / "dinastiya" / "template.txt"
-            if dinastiya_path.exists():
-                self.template_cache[ClinicMode.DINASTIYA] = dinastiya_path.read_text(encoding="utf-8")
-                print(f"✓ Загружен шаблон Династии")
+            # Загрузка шаблона Династии (приоритет .docx)
+            dinastiya_dir = templates_dir / "dinastiya"
+            dinastiya_docx = dinastiya_dir / "Артемьева+.docx"
+            dinastiya_txt = dinastiya_dir / "template.txt"
 
-            # Загрузка шаблона ПСКП
-            pskp_path = templates_dir / "pskp" / "template.txt"
-            if pskp_path.exists():
-                self.template_cache[ClinicMode.PSKP] = pskp_path.read_text(encoding="utf-8")
-                print(f"✓ Загружен шаблон ПСКП")
+            if dinastiya_docx.exists():
+                self.template_cache[ClinicMode.DINASTIYA] = self._read_docx(dinastiya_docx)
+                print(f"✓ Загружен шаблон Династии (Артемьева+.docx)")
+            elif dinastiya_txt.exists():
+                self.template_cache[ClinicMode.DINASTIYA] = dinastiya_txt.read_text(encoding="utf-8")
+                print(f"✓ Загружен шаблон Династии (template.txt)")
+
+            # Загрузка шаблона ПСКП (приоритет .docx)
+            pskp_dir = templates_dir / "pskp"
+            pskp_docx = list(pskp_dir.glob("*.docx"))
+            pskp_txt = pskp_dir / "template.txt"
+
+            if pskp_docx:
+                self.template_cache[ClinicMode.PSKP] = self._read_docx(pskp_docx[0])
+                print(f"✓ Загружен шаблон ПСКП ({pskp_docx[0].name})")
+            elif pskp_txt.exists():
+                self.template_cache[ClinicMode.PSKP] = pskp_txt.read_text(encoding="utf-8")
+                print(f"✓ Загружен шаблон ПСКП (template.txt)")
 
             print(f"✓ Шаблоны успешно загружены ({len(self.template_cache)})")
         except Exception as e:
             print(f"Ошибка загрузки шаблонов: {e}")
+
+    def _read_docx(self, path: Path) -> str:
+        """
+        Чтение текста из .docx файла
+
+        Args:
+            path: Путь к .docx файлу
+
+        Returns:
+            Текстовое содержимое документа
+        """
+        try:
+            doc = Document(path)
+            # Извлекаем весь текст из параграфов
+            full_text = []
+            for paragraph in doc.paragraphs:
+                full_text.append(paragraph.text)
+            return '\n'.join(full_text)
+        except Exception as e:
+            print(f"Ошибка чтения {path}: {e}")
+            return ""
 
     def _get_base_template(self, clinic: ClinicMode) -> str:
         """
