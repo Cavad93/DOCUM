@@ -5,3 +5,6 @@ dist/
 .DS_Store
 data/archive/*
 !data/archive/.gitkeep
+__pycache__/
+*.pyc
+*.pyo
