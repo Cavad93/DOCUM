@@ -498,6 +498,7 @@ class MedicalBot:
             await message.reply_text("❌ Нет шаблона для сохранения")
             return
 
+        temp_filepath = None
         try:
             template = ExaminationTemplate(
                 id=str(uuid.uuid4()),
@@ -522,11 +523,25 @@ class MedicalBot:
             # Отправляем заголовок
             await message.reply_text("✅ Шаблон успешно сохранен в архив!")
 
-            # Отправляем сам текст осмотра
-            await message.reply_text(
-                f"📄 ГОТОВЫЙ ОСМОТР:\n\n{template.content}",
-                parse_mode=None  # Отключаем парсинг markdown
+            # Создаем .docx файл для финального осмотра
+            await message.reply_text("📄 Создаю финальный документ...")
+            temp_filepath = self._create_docx_file(
+                template.content,
+                template.patient_data,
+                user_context.clinic
             )
+
+            # Формируем имя файла для отправки
+            safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in template.patient_data.full_name)
+            filename = f"{safe_name}_ГОТОВЫЙ_ОСМОТР_{datetime.now().strftime('%d.%m.%Y')}.docx"
+
+            # Отправляем готовый документ
+            with open(temp_filepath, 'rb') as doc_file:
+                await message.reply_document(
+                    document=doc_file,
+                    filename=filename,
+                    caption="📄 ГОТОВЫЙ ОСМОТР - документ сохранён и готов к использованию!",
+                )
 
             # Сообщение о готовности к следующему пациенту
             await message.reply_text("✅ Можете отправить данные следующего пациента.")
@@ -540,6 +555,13 @@ class MedicalBot:
         except Exception as e:
             print(f"Ошибка сохранения шаблона: {e}")
             await message.reply_text("❌ Ошибка сохранения шаблона")
+        finally:
+            # Удаляем временный файл
+            if temp_filepath and Path(temp_filepath).exists():
+                try:
+                    Path(temp_filepath).unlink()
+                except Exception as e:
+                    print(f"Ошибка удаления временного файла: {e}")
 
     def _parse_text_data(self, text: str) -> Dict[str, str]:
         """Парсинг текстовых данных пациента"""
