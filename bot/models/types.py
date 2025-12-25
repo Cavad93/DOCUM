@@ -25,6 +25,9 @@ class PatientData:
     birth_date: str
     diagnosis: str
     snils: Optional[str] = None
+    examination_date: Optional[str] = None  # Дата осмотра (по умолчанию текущая дата)
+    illness_start_date: Optional[str] = None  # Дата начала болезни
+    sick_leave_days: Optional[int] = None  # Количество дней ЭЛН (электронный лист нетрудоспособности)
 
 
 @dataclass

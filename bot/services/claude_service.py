@@ -248,6 +248,8 @@ class ClaudeService:
             Заполненный шаблон осмотра
         """
         try:
+            from datetime import datetime, timedelta
+
             # Пытаемся выбрать лучший шаблон из архива
             selected_template = None
             if archive_templates and len(archive_templates) > 0:
@@ -265,7 +267,29 @@ class ClaudeService:
             if not selected_template:
                 raise ValueError(f"Шаблон для клиники {clinic.value} не найден")
 
+            # Подготовка дат
+            exam_date = patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
+
+            # Если не указана дата начала болезни, ставим 1-2 дня до осмотра
+            if patient_data.illness_start_date:
+                illness_date = patient_data.illness_start_date
+            else:
+                exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+                illness_dt = exam_dt - timedelta(days=1)
+                illness_date = illness_dt.strftime("%d.%m.%Y")
+
+            # Рассчитываем период ЭЛН
+            sick_days = patient_data.sick_leave_days or 3  # По умолчанию 3 дня
+            exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+            eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
+            eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
+            follow_up_date = eln_end_date  # Явка в последний день ЭЛН
+
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
+            illness_line = f"- Дата начала болезни: {illness_date}\n"
+            exam_date_line = f"- Дата осмотра: {exam_date}\n"
+            eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
+            follow_up_line = f"- Дата явки к врачу: {follow_up_date}\n"
 
             prompt = f"""Вы медицинский ассистент. Ваша задача - заполнить готовый шаблон медицинского осмотра.
 
@@ -273,17 +297,28 @@ class ClaudeService:
 - ФИО: {patient_data.full_name}
 - Дата рождения: {patient_data.birth_date}
 {snils_line}- Диагноз: {patient_data.diagnosis}
+{illness_line}{exam_date_line}{eln_line}{follow_up_line}
 
 ГОТОВЫЙ ШАБЛОН ДЛЯ ЗАПОЛНЕНИЯ:
 {selected_template}
 
-ИНСТРУКЦИИ:
-1. Используйте ТОЧНО ЭТОТ шаблон, не изменяйте его структуру
-2. Заполните все разделы шаблона реалистичными медицинскими данными
-3. Вставьте данные пациента (ФИО, дата рождения, СНИЛС) в соответствующие места
-4. Заполните разделы с учетом указанного диагноза: {patient_data.diagnosis}
-5. НЕ добавляйте лишний текст до или после шаблона
-6. Верните ТОЛЬКО заполненный шаблон
+КРИТИЧЕСКИ ВАЖНЫЕ ИНСТРУКЦИИ ПО ДАТАМ:
+1. ОБЯЗАТЕЛЬНО замените ВСЕ старые даты в шаблоне на актуальные!
+2. Дата консультации/осмотра → {exam_date}
+3. В анамнезе "считает себя больным с..." → {illness_date}
+4. Период ЭЛН → с {exam_date} по {eln_end_date}
+5. Дата явки к врачу → {follow_up_date}
+6. НЕ оставляйте старые даты из шаблона (типа 10.12.2024 или 15.12.2025)!
+
+ИНСТРУКЦИИ ПО СТРУКТУРЕ И ОФОРМЛЕНИЮ:
+1. СОХРАНИТЕ оформление документа: заголовки, отступы, форматирование
+2. НЕ удаляйте логотипы клиники (если есть)
+3. СОХРАНИТЕ структуру всех разделов (Анамнез, Жалобы, Объективно и т.д.)
+4. Заполните все разделы шаблона реалистичными медицинскими данными
+5. Вставьте данные пациента (ФИО, дата рождения, СНИЛС) в соответствующие места
+6. Заполните разделы с учетом указанного диагноза: {patient_data.diagnosis}
+7. НЕ добавляйте лишний текст до или после шаблона
+8. Верните ТОЛЬКО заполненный шаблон
 
 Заполните шаблон:"""
 
@@ -316,7 +351,27 @@ class ClaudeService:
             Исправленный шаблон
         """
         try:
+            from datetime import datetime, timedelta
+
+            # Подготовка дат
+            exam_date = patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
+
+            if patient_data.illness_start_date:
+                illness_date = patient_data.illness_start_date
+            else:
+                exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+                illness_dt = exam_dt - timedelta(days=1)
+                illness_date = illness_dt.strftime("%d.%m.%Y")
+
+            sick_days = patient_data.sick_leave_days or 3
+            exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+            eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
+            eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
+
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
+            illness_line = f"- Дата начала болезни: {illness_date}\n"
+            exam_date_line = f"- Дата осмотра: {exam_date}\n"
+            eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
 
             prompt = f"""Вы медицинский ассистент. У вас есть готовый шаблон медицинского осмотра, который нужно исправить.
 
@@ -327,6 +382,7 @@ class ClaudeService:
 - ФИО: {patient_data.full_name}
 - Дата рождения: {patient_data.birth_date}
 {snils_line}- Диагноз: {patient_data.diagnosis}
+{illness_line}{exam_date_line}{eln_line}
 
 КОММЕНТАРИИ ДЛЯ ИСПРАВЛЕНИЯ:
 {corrections}
@@ -334,9 +390,10 @@ class ClaudeService:
 ИНСТРУКЦИИ:
 1. Внимательно прочитайте комментарии пользователя
 2. Внесите необходимые исправления в шаблон
-3. Сохраните структуру и формат шаблона
-4. НЕ добавляйте лишний текст до или после шаблона
-5. Верните ТОЛЬКО исправленный шаблон
+3. СОХРАНИТЕ актуальные даты (осмотр: {exam_date}, начало болезни: {illness_date}, ЭЛН: {exam_date}-{eln_end_date})
+4. СОХРАНИТЕ структуру и формат шаблона, оформление документа
+5. НЕ добавляйте лишний текст до или после шаблона
+6. Верните ТОЛЬКО исправленный шаблон
 
 Исправленный шаблон:"""
 

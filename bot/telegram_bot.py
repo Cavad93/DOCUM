@@ -89,13 +89,16 @@ class MedicalBot:
 
         await update.message.reply_text(
             "Добро пожаловать в медицинский бот! 🏥\n\n"
-            "Я помогу создать шаблон медицинского осмотра.\n\n"
+            "Я помогу создать шаблон медицинского осмотра с актуальными датами и ЭЛН.\n\n"
             "Выберите клинику, затем отправьте:\n"
             "• Фото документа (СНИЛС)\n"
             "• Или текстовые данные в формате:\n"
             "  ФИО: Иванов Иван Иванович\n"
             "  Дата рождения: 01.01.1990\n"
-            "  Диагноз: Описание диагноза\n\n"
+            "  Диагноз: Острый бронхит\n"
+            "  ЭЛН: 5 дней (необязательно, по умолчанию 3 дня)\n"
+            "  Дата осмотра: 25.12.2025 (необязательно, по умолчанию сегодня)\n"
+            "  Начало болезни: 24.12.2025 (необязательно, рассчитывается автоматически)\n\n"
             "Команды:\n"
             "/stats - статистика архива\n"
             "/help - помощь",
@@ -114,8 +117,16 @@ class MedicalBot:
             "Формат текстовых данных:\n"
             "ФИО: Иванов Иван Иванович\n"
             "Дата рождения: 01.01.1990\n"
-            "СНИЛС: 123-456-789 00 (необязательно)\n"
-            "Диагноз: Описание диагноза"
+            "Диагноз: Острый бронхит\n\n"
+            "Необязательные поля:\n"
+            "СНИЛС: 123-456-789 00\n"
+            "ЭЛН: 5 дней (или просто: ЭЛН: 5)\n"
+            "Дата осмотра: 25.12.2025\n"
+            "Начало болезни: 24.12.2025\n\n"
+            "Бот автоматически:\n"
+            "• Обновит все даты в шаблоне на актуальные\n"
+            "• Рассчитает период ЭЛН и дату явки к врачу\n"
+            "• Сохранит оформление и структуру шаблона"
         )
 
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -241,6 +252,11 @@ class MedicalBot:
             diagnosis = parsed_data.get("diagnosis", "")
             snils = parsed_data.get("snils") or user_context.patient_data.get("snils")
 
+            # Новые поля для дат
+            examination_date = parsed_data.get("examination_date")
+            illness_start_date = parsed_data.get("illness_start_date")
+            sick_leave_days = parsed_data.get("sick_leave_days")
+
             # Проверка обязательных полей
             if not full_name or not birth_date or not diagnosis:
                 await update.message.reply_text(
@@ -253,6 +269,9 @@ class MedicalBot:
                 birth_date=birth_date,
                 diagnosis=diagnosis,
                 snils=snils,
+                examination_date=examination_date,
+                illness_start_date=illness_start_date,
+                sick_leave_days=sick_leave_days,
             )
 
             # Генерируем шаблон
@@ -387,6 +406,18 @@ class MedicalBot:
                 data["snils"] = re.sub(r"^снилс\s*:\s*", "", line, flags=re.IGNORECASE).strip()
             elif re.match(r"^диагноз\s*:", line, re.IGNORECASE):
                 data["diagnosis"] = re.sub(r"^диагноз\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+            # Новые поля для дат
+            elif re.match(r"^дата осмотра\s*:", line, re.IGNORECASE):
+                data["examination_date"] = re.sub(r"^дата осмотра\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+            elif re.match(r"^начало болезни\s*:", line, re.IGNORECASE):
+                data["illness_start_date"] = re.sub(r"^начало болезни\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+            elif re.match(r"^элн\s*:", line, re.IGNORECASE):
+                # Парсим "ЭЛН: 5 дней" или "ЭЛН: 5"
+                eln_text = re.sub(r"^элн\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+                # Извлекаем число
+                match = re.search(r"(\d+)", eln_text)
+                if match:
+                    data["sick_leave_days"] = int(match.group(1))
 
         return data
 
