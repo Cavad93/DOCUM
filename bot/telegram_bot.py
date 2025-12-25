@@ -365,6 +365,9 @@ class MedicalBot:
         try:
             await message.reply_text("🔄 Вношу исправления...")
 
+            # Увеличиваем счетчик правок
+            user_context.corrections_count += 1
+
             # Исправляем шаблон
             corrected_template = await self.claude_service.correct_template(
                 user_context.current_template.content,
@@ -412,6 +415,16 @@ class MedicalBot:
 
             await self.archive_service.save_template(template)
 
+            # Сохраняем в память для обучения бота
+            await self.claude_service.memory_service.add_request(
+                clinic=user_context.clinic,
+                diagnosis=template.patient_data.diagnosis,
+                patient_name=template.patient_data.full_name,
+                template_content=template.content,
+                had_corrections=user_context.corrections_count > 0,
+                corrections_count=user_context.corrections_count
+            )
+
             # Отправляем заголовок
             await message.reply_text("✅ Шаблон успешно сохранен в архив!")
 
@@ -428,6 +441,7 @@ class MedicalBot:
             user_context.state = BotState.IDLE
             user_context.current_template = None
             user_context.patient_data = None
+            user_context.corrections_count = 0  # Сбрасываем счетчик правок
 
         except Exception as e:
             print(f"Ошибка сохранения шаблона: {e}")

@@ -54,3 +54,4 @@ class BotContext:
     state: BotState
     patient_data: Optional[dict] = None
     current_template: Optional[CurrentTemplate] = None
+    corrections_count: int = 0  # Счетчик итераций правок

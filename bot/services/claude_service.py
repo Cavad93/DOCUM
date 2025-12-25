@@ -8,6 +8,7 @@ from anthropic import Anthropic
 from docx import Document
 
 from bot.models.types import PatientData, ClinicMode
+from bot.services.memory_service import MemoryService
 
 
 class ClaudeService:
@@ -26,6 +27,7 @@ class ClaudeService:
         """
         self.client = Anthropic(api_key=api_key)
         self.template_cache: Dict[ClinicMode, str] = {}
+        self.memory_service = MemoryService()
         self._load_templates()
 
     def _load_templates(self) -> None:
@@ -167,7 +169,7 @@ class ClaudeService:
     ) -> Optional[str]:
         """
         Интеллектуальный выбор наиболее подходящего шаблона из архива
-        Использует Claude Opus 4 для анализа и выбора лучшего шаблона
+        Использует Claude Opus 4 + память последних 100 запросов для анализа и выбора
 
         Args:
             patient_data: Данные пациента
@@ -183,28 +185,45 @@ class ClaudeService:
         try:
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
 
-            # Формируем список шаблонов с нумерацией
-            templates_list = "\n\n".join(
-                [f"ШАБЛОН #{i+1}:\n{template}" for i, template in enumerate(archive_templates)]
+            # Получаем похожие успешные случаи из памяти
+            similar_cases = await self.memory_service.get_similar_cases(
+                clinic=clinic,
+                diagnosis=patient_data.diagnosis,
+                limit=5
             )
 
-            prompt = f"""Вы медицинский эксперт. Ваша задача - выбрать НАИБОЛЕЕ ПОДХОДЯЩИЙ шаблон осмотра для текущего пациента.
+            # Формируем контекст из памяти
+            memory_context = ""
+            if similar_cases:
+                memory_context = "\n\nИСТОРИЯ ПОХОЖИХ УСПЕШНЫХ СЛУЧАЕВ:\n"
+                for i, case in enumerate(similar_cases, 1):
+                    corrections_info = f" (правок: {case['corrections_count']})" if case.get('had_corrections') else " (без правок)"
+                    memory_context += f"{i}. Диагноз: {case['diagnosis']}{corrections_info}\n"
+
+            # Формируем список шаблонов с нумерацией
+            templates_list = "\n\n".join(
+                [f"ШАБЛОН #{i+1}:\n{template[:1000]}..." for i, template in enumerate(archive_templates)]
+            )
+
+            prompt = f"""Вы медицинский эксперт с доступом к базе знаний. Ваша задача - выбрать НАИБОЛЕЕ ПОДХОДЯЩИЙ шаблон осмотра.
 
 ДАННЫЕ ТЕКУЩЕГО ПАЦИЕНТА:
 - ФИО: {patient_data.full_name}
 - Дата рождения: {patient_data.birth_date}
 {snils_line}- Диагноз: {patient_data.diagnosis}
 - Клиника: {clinic.value}
+{memory_context}
 
 ДОСТУПНЫЕ ШАБЛОНЫ ИЗ АРХИВА:
 {templates_list}
 
 ИНСТРУКЦИИ:
 1. Внимательно проанализируйте диагноз пациента: {patient_data.diagnosis}
-2. Сравните его с каждым шаблоном из архива
-3. Выберите шаблон, который НАИЛУЧШЕ подходит для данного диагноза и случая
-4. Учитывайте схожесть диагнозов, структуру обследований и назначений
-5. Ответьте ТОЛЬКО номером выбранного шаблона (например: "1" или "2" или "3")
+2. Используйте историю похожих случаев для понимания паттернов
+3. Сравните текущий диагноз с каждым шаблоном из архива
+4. Выберите шаблон, который НАИЛУЧШЕ подходит для данного диагноза и случая
+5. Учитывайте схожесть диагнозов, структуру обследований и назначений
+6. Ответьте ТОЛЬКО номером выбранного шаблона (например: "1" или "2" или "3")
 
 Номер наиболее подходящего шаблона:"""
 
