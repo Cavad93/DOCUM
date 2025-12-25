@@ -268,9 +268,13 @@ class ClaudeService:
                 raise ValueError(f"Шаблон для клиники {clinic.value} не найден")
 
             # Подготовка дат
+            # Дата осмотра: ВСЕГДА используем ту, что указал пользователь, или текущую если не указана
             exam_date = patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
 
-            # Если не указана дата начала болезни, ставим 1-2 дня до осмотра
+            # Дата вызова врача на дом = дата осмотра (когда врач приехал на дом к пациенту)
+            call_date = exam_date
+
+            # Дата начала болезни: указанная пользователем или автоматически за 1 день до осмотра
             if patient_data.illness_start_date:
                 illness_date = patient_data.illness_start_date
             else:
@@ -283,13 +287,14 @@ class ClaudeService:
             exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
             eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
             eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
-            follow_up_date = eln_end_date  # Явка в последний день ЭЛН
+            follow_up_date = eln_end_date  # Дата повторного визита - последний день ЭЛН
 
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
-            illness_line = f"- Дата начала болезни: {illness_date}\n"
-            exam_date_line = f"- Дата осмотра: {exam_date}\n"
+            illness_line = f"- Дата начала болезни (когда пациент заболел): {illness_date}\n"
+            call_line = f"- Дата вызова врача на дом: {call_date}\n"
+            exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
             eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
-            follow_up_line = f"- Дата явки к врачу: {follow_up_date}\n"
+            follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
 
             prompt = f"""Вы медицинский ассистент. Ваша задача - заполнить готовый шаблон медицинского осмотра.
 
@@ -297,23 +302,26 @@ class ClaudeService:
 - ФИО: {patient_data.full_name}
 - Дата рождения: {patient_data.birth_date}
 {snils_line}- Диагноз: {patient_data.diagnosis}
-{illness_line}{exam_date_line}{eln_line}{follow_up_line}
+
+ВАЖНЫЕ ДАТЫ:
+{illness_line}{call_line}{exam_date_line}{eln_line}{follow_up_line}
 
 ГОТОВЫЙ ШАБЛОН ДЛЯ ЗАПОЛНЕНИЯ:
 {selected_template}
 
 КРИТИЧЕСКИ ВАЖНЫЕ ИНСТРУКЦИИ ПО ДАТАМ:
 1. ОБЯЗАТЕЛЬНО замените ВСЕ старые даты в шаблоне на актуальные!
-2. Дата консультации/осмотра → {exam_date}
-3. В анамнезе "считает себя больным с..." → {illness_date}
-4. Период ЭЛН → с {exam_date} по {eln_end_date}
-5. Дата явки к врачу → {follow_up_date}
-6. НЕ оставляйте старые даты из шаблона (типа 10.12.2024 или 15.12.2025)!
+2. Дата консультации/осмотра (ДАТА, Дата консультации) → {exam_date}
+3. В анамнезе заболевания "пациент считает себя больным с..." → {illness_date}
+4. В анамнезе заболевания дата вызова врача на дом → {call_date}
+5. Период ЭЛН (электронный лист нетрудоспособности) → с {exam_date} по {eln_end_date}
+6. Дата явки к врачу (повторный прием) → {follow_up_date}
+7. НЕ оставляйте старые даты из шаблона (типа 10.12.2024 или 15.12.2025)!
 
 ИНСТРУКЦИИ ПО СТРУКТУРЕ И ОФОРМЛЕНИЮ:
 1. СОХРАНИТЕ оформление документа: заголовки, отступы, форматирование
 2. НЕ удаляйте логотипы клиники (если есть)
-3. СОХРАНИТЕ структуру всех разделов (Анамнез, Жалобы, Объективно и т.д.)
+3. СОХРАНИТЕ структуру всех разделов (Анамнез заболевания, Жалобы, Объективно и т.д.)
 4. Заполните все разделы шаблона реалистичными медицинскими данными
 5. Вставьте данные пациента (ФИО, дата рождения, СНИЛС) в соответствующие места
 6. Заполните разделы с учетом указанного диагноза: {patient_data.diagnosis}
@@ -354,8 +362,13 @@ class ClaudeService:
             from datetime import datetime, timedelta
 
             # Подготовка дат
+            # Дата осмотра: используем указанную пользователем или текущую
             exam_date = patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
 
+            # Дата вызова врача на дом = дата осмотра
+            call_date = exam_date
+
+            # Дата начала болезни: указанная пользователем или за 1 день до осмотра
             if patient_data.illness_start_date:
                 illness_date = patient_data.illness_start_date
             else:
@@ -363,15 +376,19 @@ class ClaudeService:
                 illness_dt = exam_dt - timedelta(days=1)
                 illness_date = illness_dt.strftime("%d.%m.%Y")
 
+            # Период ЭЛН
             sick_days = patient_data.sick_leave_days or 3
             exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
             eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
             eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
+            follow_up_date = eln_end_date
 
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
-            illness_line = f"- Дата начала болезни: {illness_date}\n"
-            exam_date_line = f"- Дата осмотра: {exam_date}\n"
+            illness_line = f"- Дата начала болезни (когда пациент заболел): {illness_date}\n"
+            call_line = f"- Дата вызова врача на дом: {call_date}\n"
+            exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
             eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
+            follow_up_line = f"- Дата явки к врачу: {follow_up_date}\n"
 
             prompt = f"""Вы медицинский ассистент. У вас есть готовый шаблон медицинского осмотра, который нужно исправить.
 
@@ -382,7 +399,9 @@ class ClaudeService:
 - ФИО: {patient_data.full_name}
 - Дата рождения: {patient_data.birth_date}
 {snils_line}- Диагноз: {patient_data.diagnosis}
-{illness_line}{exam_date_line}{eln_line}
+
+ВАЖНЫЕ ДАТЫ:
+{illness_line}{call_line}{exam_date_line}{eln_line}{follow_up_line}
 
 КОММЕНТАРИИ ДЛЯ ИСПРАВЛЕНИЯ:
 {corrections}
@@ -390,7 +409,12 @@ class ClaudeService:
 ИНСТРУКЦИИ:
 1. Внимательно прочитайте комментарии пользователя
 2. Внесите необходимые исправления в шаблон
-3. СОХРАНИТЕ актуальные даты (осмотр: {exam_date}, начало болезни: {illness_date}, ЭЛН: {exam_date}-{eln_end_date})
+3. СОХРАНИТЕ актуальные даты:
+   - Дата осмотра/консультации: {exam_date}
+   - Начало болезни (считает себя больным с...): {illness_date}
+   - Дата вызова врача на дом (в анамнезе): {call_date}
+   - Период ЭЛН: {exam_date}-{eln_end_date}
+   - Дата явки к врачу: {follow_up_date}
 4. СОХРАНИТЕ структуру и формат шаблона, оформление документа
 5. НЕ добавляйте лишний текст до или после шаблона
 6. Верните ТОЛЬКО исправленный шаблон
