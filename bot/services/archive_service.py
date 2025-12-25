@@ -296,15 +296,83 @@ class ArchiveService:
 
         return segments
 
+    def _collect_template_styles(self, doc: Document, start_index: int) -> dict:
+        """
+        Собирает стили из разных параграфов базового шаблона
+
+        Returns:
+            dict с эталонными параграфами для разных типов
+        """
+        import re
+
+        styles = {
+            'normal': None,      # Обычный текст
+            'bold': None,        # Жирный текст (заголовки)
+            'list': None,        # Элементы списка
+        }
+
+        # Сканируем параграфы после заголовка для поиска разных стилей
+        for para in doc.paragraphs[start_index:]:
+            if not para.runs:
+                continue
+
+            text = para.text.strip()
+            if not text:
+                continue
+
+            # Определяем тип параграфа
+            is_bold = para.runs[0].font.bold if para.runs else False
+            is_list = re.match(r'^\d+\.', text) is not None
+
+            # Сохраняем эталоны
+            if is_list and styles['list'] is None:
+                styles['list'] = para
+            elif is_bold and styles['bold'] is None:
+                styles['bold'] = para
+            elif not is_bold and styles['normal'] is None:
+                styles['normal'] = para
+
+            # Если нашли все типы, можно выходить
+            if all(styles.values()):
+                break
+
+        # Если какого-то типа нет, используем первый доступный
+        fallback = doc.paragraphs[start_index] if start_index < len(doc.paragraphs) else None
+        for key in styles:
+            if styles[key] is None:
+                styles[key] = fallback
+
+        return styles
+
+    def _copy_paragraph_format(self, target_para, source_para):
+        """
+        Копирует форматирование параграфа из источника в целевой параграф
+
+        Args:
+            target_para: Целевой параграф
+            source_para: Исходный параграф (эталон)
+        """
+        if not source_para or not source_para.runs:
+            return
+
+        # Копируем форматирование параграфа
+        target_para.paragraph_format.left_indent = source_para.paragraph_format.left_indent
+        target_para.paragraph_format.right_indent = source_para.paragraph_format.right_indent
+        target_para.paragraph_format.first_line_indent = source_para.paragraph_format.first_line_indent
+        target_para.paragraph_format.line_spacing = source_para.paragraph_format.line_spacing
+        target_para.paragraph_format.space_before = source_para.paragraph_format.space_before
+        target_para.paragraph_format.space_after = source_para.paragraph_format.space_after
+        target_para.paragraph_format.alignment = source_para.paragraph_format.alignment
+
     def _replace_document_content(self, doc: Document, new_content: str) -> None:
         """
         Заменяет текстовое содержимое документа, сохраняя форматирование и структуру
 
         Стратегия:
         1. Находим начало основного содержимого (после логотипа и заголовка)
-        2. Сохраняем базовый стиль шрифта из шаблона
+        2. Сканируем шаблон и собираем эталоны разных стилей
         3. Удаляем все старые параграфы содержимого
-        4. Парсим markdown-разметку от Claude и вставляем с правильным форматированием
+        4. Вставляем новый текст, применяя подходящий стиль к каждой строке
 
         Args:
             doc: Документ Word
@@ -314,7 +382,6 @@ class ArchiveService:
 
         # Находим индекс, с которого начинается заменяемое содержимое
         start_index = 0
-        reference_paragraph = None
 
         for i, para in enumerate(doc.paragraphs):
             text_lower = para.text.lower().strip()
@@ -322,10 +389,10 @@ class ArchiveService:
             if 'осмотр терапевта' in text_lower or 'консультация терапевта' in text_lower:
                 # Начинаем заменять со следующего параграфа
                 start_index = i + 1
-                # Сохраняем следующий параграф как эталон стиля (если он есть)
-                if start_index < len(doc.paragraphs):
-                    reference_paragraph = doc.paragraphs[start_index]
                 break
+
+        # Собираем эталонные стили из шаблона ПЕРЕД удалением
+        template_styles = self._collect_template_styles(doc, start_index)
 
         # Удаляем все параграфы после заголовка (старое содержимое)
         paragraphs_to_remove = list(doc.paragraphs[start_index:])
@@ -333,20 +400,35 @@ class ArchiveService:
             p = para._element
             p.getparent().remove(p)
 
-        # Получаем базовый стиль шрифта из эталонного параграфа
+        # Получаем базовый шрифт
         base_font_name = None
         base_font_size = None
-        if reference_paragraph and reference_paragraph.runs:
-            ref_run = reference_paragraph.runs[0]
+        if template_styles['normal'] and template_styles['normal'].runs:
+            ref_run = template_styles['normal'].runs[0]
             base_font_name = ref_run.font.name
             base_font_size = ref_run.font.size
 
         # Парсим и вставляем новое содержимое
         for line in new_content.split('\n'):
-            # Создаём обычный параграф (без стилей, которых может не быть в шаблоне)
+            # Создаём новый параграф
             new_para = doc.add_paragraph()
 
-            # Парсим markdown для определения жирного/обычного текста
+            # Определяем тип строки
+            is_list_item = re.match(r'^\d+\.', line.strip()) is not None
+            has_bold = '**' in line
+
+            # Выбираем подходящий эталон стиля
+            if is_list_item:
+                style_source = template_styles['list']
+            elif has_bold:
+                style_source = template_styles['bold']
+            else:
+                style_source = template_styles['normal']
+
+            # Копируем форматирование параграфа
+            self._copy_paragraph_format(new_para, style_source)
+
+            # Парсим markdown и вставляем текст с форматированием
             segments = self._parse_markdown_formatting(line)
 
             for segment_text, is_bold in segments:
