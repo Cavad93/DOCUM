@@ -283,19 +283,20 @@ class ClaudeService:
         self,
         patient_data: PatientData,
         clinic: ClinicMode,
-        archive_templates: Optional[List[str]] = None,
+        archive_template: Optional[str] = None,
     ) -> str:
         """
-        Генерация шаблона осмотра на основе базового шаблона
-        Использует Claude Sonnet 4.5 для заполнения базового шаблона клиники
+        Генерация шаблона осмотра на основе базового или архивного шаблона
+        Использует Claude Sonnet 4.5 для заполнения шаблона
 
-        ВАЖНО: Архивные шаблоны НЕ используются (решение проблемы "Message is too long")
-        Всегда используется только базовый шаблон клиники
+        Логика выбора шаблона:
+        - Если archive_template предоставлен (найден локальным поиском) - используем его
+        - Если archive_template = None (не найден в архиве) - используем базовый шаблон
 
         Args:
             patient_data: Данные пациента
             clinic: Режим клиники
-            archive_templates: Не используется (оставлено для совместимости)
+            archive_template: Шаблон из архива (найден локальным поиском БЕЗ AI) или None
 
         Returns:
             Заполненный шаблон осмотра
@@ -303,10 +304,13 @@ class ClaudeService:
         try:
             from datetime import datetime, timedelta
 
-            # ВСЕГДА используем только базовый шаблон
-            # Архивные шаблоны НЕ отправляются в AI (решение проблемы "Message is too long")
-            selected_template = self._get_base_template(clinic)
-            print(f"✓ Использую базовый шаблон клиники {clinic.value}")
+            # Используем шаблон из архива (если найден локальным поиском) или базовый
+            if archive_template:
+                selected_template = archive_template
+                print(f"✓ Использую шаблон из архива (найден локальным поиском)")
+            else:
+                selected_template = self._get_base_template(clinic)
+                print(f"✓ Использую базовый шаблон клиники {clinic.value}")
 
             if not selected_template:
                 raise ValueError(f"Шаблон для клиники {clinic.value} не найден")

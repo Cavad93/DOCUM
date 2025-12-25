@@ -202,6 +202,82 @@ class ArchiveService:
             print(f"Ошибка получения похожих шаблонов: {e}")
             return []
 
+    async def find_template_by_diagnosis(self, diagnosis: str, clinic: ClinicMode) -> Optional[str]:
+        """
+        ЛОКАЛЬНЫЙ поиск шаблона по диагнозу БЕЗ использования AI
+        Использует простой поиск по ключевым словам
+
+        Args:
+            diagnosis: Диагноз пациента
+            clinic: Режим клиники
+
+        Returns:
+            Содержимое найденного шаблона или None если не найдено
+        """
+        try:
+            # Нормализуем диагноз для поиска (нижний регистр, убираем лишние пробелы)
+            diagnosis_normalized = diagnosis.lower().strip()
+
+            # Извлекаем ключевые слова из диагноза
+            keywords = set(diagnosis_normalized.split())
+
+            # Убираем частые слова, которые не помогают в поиске
+            stop_words = {'и', 'или', 'с', 'на', 'в', 'по', 'от', 'к', 'из'}
+            keywords = keywords - stop_words
+
+            best_match = None
+            best_score = 0
+
+            # Ищем все .meta.json файлы для данной клиники
+            for meta_filepath in self.archive_path.glob(f"{clinic.value}/**/*.meta.json"):
+                try:
+                    # Читаем метаданные
+                    metadata = json.loads(meta_filepath.read_text(encoding="utf-8"))
+
+                    # Получаем диагноз из архивного шаблона
+                    archived_diagnosis = metadata["patient_data"]["diagnosis"].lower().strip()
+
+                    # Простой поиск по совпадению ключевых слов
+                    archived_keywords = set(archived_diagnosis.split()) - stop_words
+
+                    # Считаем количество совпадающих ключевых слов
+                    matching_keywords = keywords.intersection(archived_keywords)
+                    score = len(matching_keywords)
+
+                    # Бонус за точное совпадение
+                    if diagnosis_normalized == archived_diagnosis:
+                        score += 100
+
+                    # Бонус за совпадение по подстроке
+                    elif diagnosis_normalized in archived_diagnosis or archived_diagnosis in diagnosis_normalized:
+                        score += 50
+
+                    # Обновляем лучшее совпадение
+                    if score > best_score:
+                        best_score = score
+
+                        # Читаем содержимое из .docx файла
+                        docx_filepath = meta_filepath.parent / metadata["docx_file"]
+                        best_match = self._read_docx_content(docx_filepath)
+
+                        print(f"✓ Найдено совпадение (score={score}): {archived_diagnosis}")
+
+                except Exception as e:
+                    print(f"Ошибка чтения файла {meta_filepath}: {e}")
+                    continue
+
+            # Если нашли хорошее совпадение (хотя бы 1 общее ключевое слово)
+            if best_score > 0 and best_match:
+                print(f"✓ Используем шаблон из архива (score={best_score})")
+                return best_match
+            else:
+                print(f"✗ Подходящий шаблон не найден в архиве, будет использован базовый")
+                return None
+
+        except Exception as e:
+            print(f"Ошибка поиска шаблона по диагнозу: {e}")
+            return None
+
     async def get_statistics(self) -> Dict[str, any]:
         """
         Получение статистики архива
