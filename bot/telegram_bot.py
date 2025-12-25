@@ -106,6 +106,7 @@ class MedicalBot:
             "  Дата рождения: 01.01.1990\n"
             "  Диагноз: Острый бронхит\n"
             "  ЭЛН: 5 дней (необязательно, по умолчанию 3 дня)\n"
+            "  ЭЛН: отказ (если пациент отказался от больничного листа)\n"
             "  Дата осмотра: 25.12.2025 (необязательно, по умолчанию сегодня)\n"
             "  Начало болезни: 24.12.2025 (необязательно, рассчитывается автоматически)\n\n"
             "Команды:\n"
@@ -167,6 +168,7 @@ class MedicalBot:
             "  Дата рождения: 01.01.1990\n"
             "  Диагноз: Острый бронхит\n"
             "  ЭЛН: 5 дней (необязательно, по умолчанию 3 дня)\n"
+            "  ЭЛН: отказ (если пациент отказался от больничного листа)\n"
             "  Дата осмотра: 25.12.2025 (необязательно, по умолчанию сегодня)\n"
             "  Начало болезни: 24.12.2025 (необязательно, рассчитывается автоматически)\n\n"
             "Команды:\n"
@@ -289,6 +291,7 @@ class MedicalBot:
             examination_date = parsed_data.get("examination_date")
             illness_start_date = parsed_data.get("illness_start_date")
             sick_leave_days = parsed_data.get("sick_leave_days")
+            eln_refused = parsed_data.get("eln_refused", False)
 
             # Проверка обязательных полей
             if not full_name or not birth_date or not diagnosis:
@@ -305,6 +308,7 @@ class MedicalBot:
                 examination_date=examination_date,
                 illness_start_date=illness_start_date,
                 sick_leave_days=sick_leave_days,
+                eln_refused=eln_refused,
             )
 
             # Генерируем шаблон
@@ -469,12 +473,19 @@ class MedicalBot:
             elif re.match(r"^начало болезни\s*:", line, re.IGNORECASE):
                 data["illness_start_date"] = re.sub(r"^начало болезни\s*:\s*", "", line, flags=re.IGNORECASE).strip()
             elif re.match(r"^элн\s*:", line, re.IGNORECASE):
-                # Парсим "ЭЛН: 5 дней" или "ЭЛН: 5"
-                eln_text = re.sub(r"^элн\s*:\s*", "", line, flags=re.IGNORECASE).strip()
-                # Извлекаем число
-                match = re.search(r"(\d+)", eln_text)
-                if match:
-                    data["sick_leave_days"] = int(match.group(1))
+                # Парсим "ЭЛН: 5 дней" или "ЭЛН: 5" или "ЭЛН: отказ"
+                eln_text = re.sub(r"^элн\s*:\s*", "", line, flags=re.IGNORECASE).strip().lower()
+
+                # Проверяем на отказ
+                if "отказ" in eln_text or "нет" in eln_text:
+                    data["eln_refused"] = True
+                    data["sick_leave_days"] = None
+                else:
+                    # Извлекаем число
+                    match = re.search(r"(\d+)", eln_text)
+                    if match:
+                        data["sick_leave_days"] = int(match.group(1))
+                        data["eln_refused"] = False
 
         return data
 

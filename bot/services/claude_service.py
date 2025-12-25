@@ -248,6 +248,37 @@ class ClaudeService:
             print(f"Ошибка выбора шаблона: {e}")
             return None
 
+    def _get_eln_instructions(self, patient_data: PatientData) -> str:
+        """
+        Генерирует инструкции по ЭЛН в зависимости от того, отказ или нет
+
+        Args:
+            patient_data: Данные пациента
+
+        Returns:
+            Текст инструкций для Claude AI
+        """
+        if patient_data.eln_refused:
+            return """ПАЦИЕНТ ОТКАЗАЛСЯ ОТ ЭЛН!
+- Напишите: "Нетрудоспособен, ЭЛН - отказ"
+- Напишите: "Явка к врачу: по необходимости"
+- НЕ указывайте конкретные даты ЭЛН и явки к врачу!
+- НЕ пишите "Режим: домашний" если это не указано в шаблоне"""
+        else:
+            # Рассчитываем даты для обычного ЭЛН
+            from datetime import datetime, timedelta
+            exam_date = patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
+            sick_days = patient_data.sick_leave_days or 3
+            exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+            eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
+            eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
+            follow_up_date = eln_end_date
+
+            return f"""- Период ЭЛН (электронный лист нетрудоспособности) → с {exam_date} по {eln_end_date}
+- Дата явки к врачу (повторный прием) → {follow_up_date}
+- Напишите: "Нетрудоспособен, ЭЛН с {exam_date} по {eln_end_date}"
+- Напишите: "Явка к врачу: {follow_up_date}" """
+
     async def generate_examination_template(
         self,
         patient_data: PatientData,
@@ -301,19 +332,25 @@ class ClaudeService:
                 illness_dt = exam_dt - timedelta(days=1)
                 illness_date = illness_dt.strftime("%d.%m.%Y")
 
-            # Рассчитываем период ЭЛН
-            sick_days = patient_data.sick_leave_days or 3  # По умолчанию 3 дня
-            exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
-            eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
-            eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
-            follow_up_date = eln_end_date  # Дата повторного визита - последний день ЭЛН
+            # Рассчитываем период ЭЛН (если не отказ)
+            if patient_data.eln_refused:
+                # Отказ от ЭЛН
+                eln_line = "- ЭЛН: ОТКАЗ (пациент отказался от электронного листа нетрудоспособности)\n"
+                follow_up_line = "- Дата явки к врачу: по необходимости\n"
+            else:
+                # Обычный расчёт ЭЛН
+                sick_days = patient_data.sick_leave_days or 3  # По умолчанию 3 дня
+                exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+                eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
+                eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
+                follow_up_date = eln_end_date  # Дата повторного визита - последний день ЭЛН
+                eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
+                follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
 
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
             illness_line = f"- Дата начала болезни (когда пациент заболел): {illness_date}\n"
             call_line = f"- Дата вызова врача на дом: {call_date}\n"
             exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
-            eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
-            follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
 
             prompt = f"""Вы медицинский ассистент. Ваша задача - заполнить готовый шаблон медицинского осмотра.
 
@@ -333,9 +370,10 @@ class ClaudeService:
 2. Дата консультации/осмотра (ДАТА, Дата консультации) → {exam_date}
 3. В анамнезе заболевания "пациент считает себя больным с..." → {illness_date}
 4. В анамнезе заболевания дата вызова врача на дом → {call_date}
-5. Период ЭЛН (электронный лист нетрудоспособности) → с {exam_date} по {eln_end_date}
-6. Дата явки к врачу (повторный прием) → {follow_up_date}
-7. НЕ оставляйте старые даты из шаблона (типа 10.12.2024 или 15.12.2025)!
+5. НЕ оставляйте старые даты из шаблона (типа 10.12.2024 или 15.12.2025)!
+
+КРИТИЧЕСКИ ВАЖНО ПРО ЭЛН И ЯВКУ:
+{self._get_eln_instructions(patient_data)}
 
 ИНСТРУКЦИИ ПО СТРУКТУРЕ И ОФОРМЛЕНИЮ:
 1. СОХРАНИТЕ структуру всех разделов (Анамнез заболевания, Жалобы, Объективно и т.д.)
@@ -423,19 +461,25 @@ class ClaudeService:
                 illness_dt = exam_dt - timedelta(days=1)
                 illness_date = illness_dt.strftime("%d.%m.%Y")
 
-            # Период ЭЛН
-            sick_days = patient_data.sick_leave_days or 3
-            exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
-            eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
-            eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
-            follow_up_date = eln_end_date
+            # Рассчитываем период ЭЛН (если не отказ)
+            if patient_data.eln_refused:
+                # Отказ от ЭЛН
+                eln_line = "- ЭЛН: ОТКАЗ (пациент отказался от электронного листа нетрудоспособности)\n"
+                follow_up_line = "- Дата явки к врачу: по необходимости\n"
+            else:
+                # Обычный расчёт ЭЛН
+                sick_days = patient_data.sick_leave_days or 3
+                exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+                eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
+                eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
+                follow_up_date = eln_end_date
+                eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
+                follow_up_line = f"- Дата явки к врачу: {follow_up_date}\n"
 
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
             illness_line = f"- Дата начала болезни (когда пациент заболел): {illness_date}\n"
             call_line = f"- Дата вызова врача на дом: {call_date}\n"
             exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
-            eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
-            follow_up_line = f"- Дата явки к врачу: {follow_up_date}\n"
 
             prompt = f"""Вы медицинский ассистент. У вас есть готовый шаблон медицинского осмотра, который нужно исправить.
 
@@ -460,11 +504,12 @@ class ClaudeService:
    - Дата осмотра/консультации: {exam_date}
    - Начало болезни (считает себя больным с...): {illness_date}
    - Дата вызова врача на дом (в анамнезе): {call_date}
-   - Период ЭЛН: {exam_date}-{eln_end_date}
-   - Дата явки к врачу: {follow_up_date}
 4. СОХРАНИТЕ структуру шаблона
 5. НЕ добавляйте лишний текст до или после шаблона
 6. Верните ТОЛЬКО исправленный шаблон
+
+КРИТИЧЕСКИ ВАЖНО ПРО ЭЛН И ЯВКУ:
+{self._get_eln_instructions(patient_data)}
 
 КРИТИЧЕСКИ ВАЖНО - НЕ ВКЛЮЧАЙТЕ В ОТВЕТ:
 1. НЕ включайте шапку документа (логотип, контакты клиники)
