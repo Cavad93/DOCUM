@@ -388,7 +388,17 @@ class MedicalBot:
 
             await self.archive_service.save_template(template)
 
-            await message.reply_text("✅ Шаблон успешно сохранен в архив!\n\nМожете отправить данные следующего пациента.")
+            # Отправляем заголовок
+            await message.reply_text("✅ Шаблон успешно сохранен в архив!")
+
+            # Отправляем сам текст осмотра
+            await message.reply_text(
+                f"📄 ГОТОВЫЙ ОСМОТР:\n\n{template.content}",
+                parse_mode=None  # Отключаем парсинг markdown
+            )
+
+            # Сообщение о готовности к следующему пациенту
+            await message.reply_text("✅ Можете отправить данные следующего пациента.")
 
             # Очищаем контекст
             user_context.state = BotState.IDLE
