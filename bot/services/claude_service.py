@@ -159,6 +159,76 @@ class ClaudeService:
             print(f"Ошибка распознавания изображения: {e}")
             raise
 
+    async def select_best_template(
+        self,
+        patient_data: PatientData,
+        clinic: ClinicMode,
+        archive_templates: List[str],
+    ) -> Optional[str]:
+        """
+        Интеллектуальный выбор наиболее подходящего шаблона из архива
+        Использует Claude Opus 4 для анализа и выбора лучшего шаблона
+
+        Args:
+            patient_data: Данные пациента
+            clinic: Режим клиники
+            archive_templates: Список шаблонов из архива
+
+        Returns:
+            Выбранный шаблон или None если нет подходящих
+        """
+        if not archive_templates:
+            return None
+
+        try:
+            snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
+
+            # Формируем список шаблонов с нумерацией
+            templates_list = "\n\n".join(
+                [f"ШАБЛОН #{i+1}:\n{template}" for i, template in enumerate(archive_templates)]
+            )
+
+            prompt = f"""Вы медицинский эксперт. Ваша задача - выбрать НАИБОЛЕЕ ПОДХОДЯЩИЙ шаблон осмотра для текущего пациента.
+
+ДАННЫЕ ТЕКУЩЕГО ПАЦИЕНТА:
+- ФИО: {patient_data.full_name}
+- Дата рождения: {patient_data.birth_date}
+{snils_line}- Диагноз: {patient_data.diagnosis}
+- Клиника: {clinic.value}
+
+ДОСТУПНЫЕ ШАБЛОНЫ ИЗ АРХИВА:
+{templates_list}
+
+ИНСТРУКЦИИ:
+1. Внимательно проанализируйте диагноз пациента: {patient_data.diagnosis}
+2. Сравните его с каждым шаблоном из архива
+3. Выберите шаблон, который НАИЛУЧШЕ подходит для данного диагноза и случая
+4. Учитывайте схожесть диагнозов, структуру обследований и назначений
+5. Ответьте ТОЛЬКО номером выбранного шаблона (например: "1" или "2" или "3")
+
+Номер наиболее подходящего шаблона:"""
+
+            message = self.client.messages.create(
+                model=self.GENERATION_MODEL,
+                max_tokens=10,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            # Извлекаем номер из ответа
+            response = message.content[0].text.strip()
+            try:
+                template_index = int(response) - 1
+                if 0 <= template_index < len(archive_templates):
+                    print(f"✓ AI выбрал шаблон #{template_index + 1} как наиболее подходящий")
+                    return archive_templates[template_index]
+            except ValueError:
+                print(f"Ошибка парсинга выбора AI: {response}")
+
+            return None
+        except Exception as e:
+            print(f"Ошибка выбора шаблона: {e}")
+            return None
+
     async def generate_examination_template(
         self,
         patient_data: PatientData,
@@ -167,27 +237,33 @@ class ClaudeService:
     ) -> str:
         """
         Генерация шаблона осмотра на основе готового шаблона
-        Использует Claude Opus 4 для заполнения готового медицинского шаблона
+        Использует Claude Opus 4 для выбора подходящего шаблона из архива и его заполнения
 
         Args:
             patient_data: Данные пациента
             clinic: Режим клиники
-            archive_templates: Похожие шаблоны из архива для справки
+            archive_templates: Похожие шаблоны из архива
 
         Returns:
             Заполненный шаблон осмотра
         """
         try:
-            base_template = self._get_base_template(clinic)
-
-            if not base_template:
-                raise ValueError(f"Шаблон для клиники {clinic.value} не найден")
-
-            archive_context = ""
-            if archive_templates:
-                archive_context = "\n\nПРИМЕРЫ ПОХОЖИХ ОСМОТРОВ ИЗ АРХИВА (для справки):\n" + "\n---\n".join(
-                    archive_templates
+            # Пытаемся выбрать лучший шаблон из архива
+            selected_template = None
+            if archive_templates and len(archive_templates) > 0:
+                selected_template = await self.select_best_template(
+                    patient_data, clinic, archive_templates
                 )
+
+            # Если не удалось выбрать из архива, используем базовый шаблон
+            if not selected_template:
+                selected_template = self._get_base_template(clinic)
+                print(f"✓ Использую базовый шаблон клиники {clinic.value}")
+            else:
+                print(f"✓ Использую выбранный шаблон из архива")
+
+            if not selected_template:
+                raise ValueError(f"Шаблон для клиники {clinic.value} не найден")
 
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
 
@@ -198,19 +274,16 @@ class ClaudeService:
 - Дата рождения: {patient_data.birth_date}
 {snils_line}- Диагноз: {patient_data.diagnosis}
 
-ГОТОВЫЙ ШАБЛОН КЛИНИКИ:
-{base_template}
-
-{archive_context}
+ГОТОВЫЙ ШАБЛОН ДЛЯ ЗАПОЛНЕНИЯ:
+{selected_template}
 
 ИНСТРУКЦИИ:
 1. Используйте ТОЧНО ЭТОТ шаблон, не изменяйте его структуру
 2. Заполните все разделы шаблона реалистичными медицинскими данными
 3. Вставьте данные пациента (ФИО, дата рождения, СНИЛС) в соответствующие места
 4. Заполните разделы с учетом указанного диагноза: {patient_data.diagnosis}
-5. Используйте примеры из архива как справочный материал для стиля заполнения
-6. НЕ добавляйте лишний текст до или после шаблона
-7. Верните ТОЛЬКО заполненный шаблон
+5. НЕ добавляйте лишний текст до или после шаблона
+6. Верните ТОЛЬКО заполненный шаблон
 
 Заполните шаблон:"""
 
