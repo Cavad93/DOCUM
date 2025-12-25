@@ -26,13 +26,20 @@ class ArchiveService:
     async def save_template(self, template: ExaminationTemplate) -> None:
         """
         Сохранение шаблона в архив
+        Структура: archive/{clinic}/{date}/файл.json
 
         Args:
             template: Шаблон для сохранения
         """
         try:
+            # Создаем структуру папок: clinic/date/
+            date_str = template.created_at.strftime("%Y-%m-%d")
+            clinic_dir = self.archive_path / template.clinic.value / date_str
+            clinic_dir.mkdir(parents=True, exist_ok=True)
+
+            # Генерируем имя файла
             filename = self._generate_filename(template)
-            filepath = self.archive_path / filename
+            filepath = clinic_dir / filename
 
             # Преобразуем в словарь для сохранения
             data = {
@@ -49,7 +56,7 @@ class ArchiveService:
             }
 
             filepath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            print(f"✓ Шаблон сохранен: {filename}")
+            print(f"✓ Шаблон сохранен: {template.clinic.value}/{date_str}/{filename}")
         except Exception as e:
             print(f"Ошибка сохранения шаблона: {e}")
             raise
@@ -61,6 +68,7 @@ class ArchiveService:
     ) -> List[ExaminationTemplate]:
         """
         Поиск шаблонов по параметрам
+        Ищет в структуре: archive/{clinic}/{date}/*.json
 
         Args:
             patient_data: Частичные данные пациента для поиска
@@ -72,7 +80,8 @@ class ArchiveService:
         try:
             templates = []
 
-            for filepath in self.archive_path.glob("*.json"):
+            # Ищем во всех подпапках
+            for filepath in self.archive_path.glob("**/*.json"):
                 try:
                     data = json.loads(filepath.read_text(encoding="utf-8"))
 
@@ -139,6 +148,7 @@ class ArchiveService:
     async def get_statistics(self) -> Dict[str, any]:
         """
         Получение статистики архива
+        Ищет в структуре: archive/{clinic}/{date}/*.json
 
         Returns:
             Словарь со статистикой
@@ -147,7 +157,8 @@ class ArchiveService:
             total = 0
             by_clinic: Dict[str, int] = {}
 
-            for filepath in self.archive_path.glob("*.json"):
+            # Ищем во всех подпапках
+            for filepath in self.archive_path.glob("**/*.json"):
                 try:
                     data = json.loads(filepath.read_text(encoding="utf-8"))
                     total += 1
@@ -166,6 +177,7 @@ class ArchiveService:
     def _generate_filename(self, template: ExaminationTemplate) -> str:
         """
         Генерация имени файла для шаблона
+        Clinic и date уже в пути папки, поэтому включаем только имя и время
 
         Args:
             template: Шаблон
@@ -173,6 +185,6 @@ class ArchiveService:
         Returns:
             Имя файла
         """
-        date = datetime.now().strftime("%Y-%m-%d")
+        time_str = datetime.now().strftime("%H-%M-%S")
         safe_name = "".join(c if c.isalnum() else "_" for c in template.patient_data.full_name)
-        return f"{template.clinic.value}_{safe_name}_{date}_{template.id}.json"
+        return f"{safe_name}_{time_str}_{template.id[:8]}.json"

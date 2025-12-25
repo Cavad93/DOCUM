@@ -47,12 +47,12 @@ class ClaudeService:
 
             # Загрузка шаблона ПСКП (приоритет .docx)
             pskp_dir = templates_dir / "pskp"
-            pskp_docx = list(pskp_dir.glob("*.docx"))
+            pskp_docx = pskp_dir / "Митина Н.А.docx"
             pskp_txt = pskp_dir / "template.txt"
 
-            if pskp_docx:
-                self.template_cache[ClinicMode.PSKP] = self._read_docx(pskp_docx[0])
-                print(f"✓ Загружен шаблон ПСКП ({pskp_docx[0].name})")
+            if pskp_docx.exists():
+                self.template_cache[ClinicMode.PSKP] = self._read_docx(pskp_docx)
+                print(f"✓ Загружен шаблон ПСКП (Митина Н.А.docx)")
             elif pskp_txt.exists():
                 self.template_cache[ClinicMode.PSKP] = pskp_txt.read_text(encoding="utf-8")
                 print(f"✓ Загружен шаблон ПСКП (template.txt)")
