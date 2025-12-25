@@ -15,8 +15,8 @@ class ClaudeService:
     """Сервис для работы с Claude AI API"""
 
     # Актуальные модели Claude (2025)
-    OCR_MODEL = "claude-sonnet-4-5-20250929"  # Последняя и наиболее продвинутая модель Sonnet
-    GENERATION_MODEL = "claude-opus-4-20250514"  # Opus 4 для генерации шаблонов
+    OCR_MODEL = "claude-sonnet-4-5-20250929"  # Sonnet 4.5 для OCR СНИЛС
+    GENERATION_MODEL = "claude-sonnet-4-5-20250929"  # Sonnet 4.5 для генерации и исправления шаблонов
 
     def __init__(self, api_key: str):
         """
@@ -169,7 +169,7 @@ class ClaudeService:
     ) -> Optional[str]:
         """
         Интеллектуальный выбор наиболее подходящего шаблона из архива
-        Использует Claude Opus 4 + память последних 100 запросов для анализа и выбора
+        Использует Claude Sonnet 4.5 + память последних 100 запросов для анализа и выбора
 
         Args:
             patient_data: Данные пациента
@@ -256,7 +256,7 @@ class ClaudeService:
     ) -> str:
         """
         Генерация шаблона осмотра на основе готового шаблона
-        Использует Claude Opus 4 для выбора подходящего шаблона из архива и его заполнения
+        Использует Claude Sonnet 4.5 для выбора подходящего шаблона из архива и его заполнения
 
         Args:
             patient_data: Данные пациента
