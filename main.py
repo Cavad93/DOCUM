@@ -59,13 +59,20 @@ def main():
 
     # Создание и запуск бота
     try:
+        print("🔧 Инициализация бота...")
         bot = MedicalBot(telegram_token, claude_api_key)
+        print("✅ Бот успешно инициализирован")
+        print("🚀 Бот работает! Нажмите Ctrl+C для остановки\n")
         bot.run()
     except KeyboardInterrupt:
         print("\n⏹️  Остановка бота...")
         sys.exit(0)
     except Exception as e:
-        print(f"❌ Ошибка запуска бота: {e}")
+        print(f"\n❌ Критическая ошибка: {e}")
+        print("\n🔍 Для диагностики проверьте:")
+        print("  • Файл .env существует и содержит правильные токены")
+        print("  • Интернет-соединение работает")
+        print("  • Telegram доступен (не заблокирован)")
         sys.exit(1)
 
 

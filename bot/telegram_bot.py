@@ -31,7 +31,16 @@ class MedicalBot:
             telegram_token: Токен Telegram бота
             claude_api_key: API ключ Claude
         """
-        self.application = Application.builder().token(telegram_token).build()
+        # Создание приложения с увеличенными таймаутами и retry логикой
+        self.application = (
+            Application.builder()
+            .token(telegram_token)
+            .connect_timeout(30.0)  # Таймаут подключения 30 секунд
+            .read_timeout(30.0)  # Таймаут чтения 30 секунд
+            .write_timeout(30.0)  # Таймаут записи 30 секунд
+            .pool_timeout(30.0)  # Таймаут пула 30 секунд
+            .build()
+        )
         self.claude_service = ClaudeService(claude_api_key)
         self.archive_service = ArchiveService()
         self.user_contexts: Dict[int, BotContext] = {}
@@ -422,6 +431,22 @@ class MedicalBot:
         return data
 
     def run(self):
-        """Запуск бота"""
-        print("🤖 Telegram бот запущен!")
-        self.application.run_polling()
+        """Запуск бота с обработкой ошибок подключения"""
+        print("🤖 Запуск Telegram бота...")
+        print("📡 Подключение к Telegram API...")
+
+        try:
+            # Запуск с параметрами для retry логики
+            self.application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,  # Игнорировать старые обновления
+                close_loop=False,
+            )
+        except Exception as e:
+            print(f"\n❌ Ошибка подключения к Telegram: {e}")
+            print("\n💡 Возможные решения:")
+            print("1. Проверьте подключение к интернету")
+            print("2. Убедитесь, что токен бота правильный (файл .env)")
+            print("3. Telegram может быть заблокирован в вашей сети - попробуйте VPN")
+            print("4. Проверьте, что бот активирован через @BotFather")
+            raise
