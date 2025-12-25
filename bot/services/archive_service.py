@@ -260,8 +260,9 @@ class ArchiveService:
 
         Стратегия:
         1. Находим начало основного содержимого (после логотипа и заголовка)
-        2. Удаляем все старые параграфы содержимого
-        3. Вставляем новый текст от Claude построчно
+        2. Сохраняем стиль первого параграфа как эталон
+        3. Удаляем все старые параграфы содержимого
+        4. Вставляем новый текст от Claude построчно с сохранением стиля
 
         Args:
             doc: Документ Word
@@ -270,12 +271,17 @@ class ArchiveService:
         # Находим индекс, с которого начинается заменяемое содержимое
         # (пропускаем заголовок документа, логотип и главный заголовок)
         start_index = 0
+        reference_paragraph = None
+
         for i, para in enumerate(doc.paragraphs):
             text_lower = para.text.lower().strip()
             # Ищем заголовок "Осмотр терапевта на дому" или подобные
             if 'осмотр терапевта' in text_lower or 'консультация терапевта' in text_lower:
                 # Начинаем заменять со следующего параграфа
                 start_index = i + 1
+                # Сохраняем следующий параграф как эталон стиля (если он есть)
+                if start_index < len(doc.paragraphs):
+                    reference_paragraph = doc.paragraphs[start_index]
                 break
 
         # Удаляем все параграфы после заголовка (старое содержимое)
@@ -286,7 +292,22 @@ class ArchiveService:
 
         # Добавляем новое содержимое построчно
         for line in new_content.split('\n'):
-            doc.add_paragraph(line)
+            new_para = doc.add_paragraph(line)
+
+            # Копируем стиль из эталонного параграфа, если он был найден
+            if reference_paragraph is not None:
+                # Копируем стиль параграфа
+                new_para.style = reference_paragraph.style
+
+                # Копируем форматирование runs (шрифт, размер, цвет и т.д.)
+                if reference_paragraph.runs and new_para.runs:
+                    ref_run = reference_paragraph.runs[0]
+                    for run in new_para.runs:
+                        run.font.name = ref_run.font.name
+                        run.font.size = ref_run.font.size
+                        run.font.bold = ref_run.font.bold
+                        run.font.italic = ref_run.font.italic
+                        run.font.color.rgb = ref_run.font.color.rgb
 
     def _generate_filename(self, template: ExaminationTemplate) -> str:
         """
