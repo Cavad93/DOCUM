@@ -296,26 +296,96 @@ class ArchiveService:
 
         return segments
 
-    def _copy_paragraph_format(self, target_para, source_para):
+    def _collect_paragraph_styles_from_template(self, doc: Document, start_index: int) -> dict:
         """
-        Устанавливает минимальное форматирование параграфа для плотного текста
+        Сканирует базовый шаблон и собирает РЕАЛЬНЫЕ стили параграфов
 
-        НЕ копирует отступы из шаблона - они могут быть неправильными!
-        Использует только базовое форматирование для визуального совпадения 1 к 1
+        Сохраняет все параграфы из шаблона для последующего копирования их стилей
+
+        Returns:
+            dict с сохранёнными параграфами и их индексами
+        """
+        import re
+
+        saved_paragraphs = []
+
+        # Сохраняем ВСЕ параграфы из шаблона (они будут удалены, но нам нужны их стили)
+        for i, para in enumerate(doc.paragraphs[start_index:]):
+            if not para.runs or not para.text.strip():
+                continue
+
+            # Создаём копию информации о параграфе
+            para_info = {
+                'text': para.text.strip(),
+                'is_bold': para.runs[0].font.bold if para.runs else False,
+                'is_list': re.match(r'^\d+\.', para.text.strip()) is not None,
+                'font_name': para.runs[0].font.name if para.runs else None,
+                'font_size': para.runs[0].font.size if para.runs else None,
+                'left_indent': para.paragraph_format.left_indent,
+                'right_indent': para.paragraph_format.right_indent,
+                'first_line_indent': para.paragraph_format.first_line_indent,
+                'line_spacing': para.paragraph_format.line_spacing,
+                'space_before': para.paragraph_format.space_before,
+                'space_after': para.paragraph_format.space_after,
+                'alignment': para.paragraph_format.alignment,
+            }
+            saved_paragraphs.append(para_info)
+
+        return {
+            'all_paragraphs': saved_paragraphs,
+        }
+
+    def _find_matching_style(self, line: str, template_styles: dict):
+        """
+        Находит подходящий стиль для строки из сохранённых стилей шаблона
+
+        Args:
+            line: Строка текста
+            template_styles: Сохранённые стили из шаблона
+
+        Returns:
+            dict с информацией о стиле или None
+        """
+        import re
+
+        # Определяем характеристики текущей строки
+        has_bold = '**' in line
+        is_list = re.match(r'^\d+\.', line.strip()) is not None
+
+        # Ищем наиболее подходящий параграф из шаблона
+        for para_info in template_styles['all_paragraphs']:
+            # Если это список, ищем параграф-список
+            if is_list and para_info['is_list']:
+                return para_info
+            # Если жирный текст, ищем жирный параграф
+            elif has_bold and para_info['is_bold']:
+                return para_info
+            # Если обычный текст, ищем обычный параграф
+            elif not has_bold and not is_list and not para_info['is_bold'] and not para_info['is_list']:
+                return para_info
+
+        # Если не нашли точное совпадение, возвращаем первый доступный
+        return template_styles['all_paragraphs'][0] if template_styles['all_paragraphs'] else None
+
+    def _apply_paragraph_style(self, target_para, style_info):
+        """
+        Применяет сохранённый стиль к параграфу
 
         Args:
             target_para: Целевой параграф
-            source_para: Исходный параграф (эталон) - не используется
+            style_info: dict с информацией о стиле из шаблона
         """
-        from docx.shared import Pt
+        if not style_info:
+            return
 
-        # Минимальное форматирование для плотного текста как в оригинале
-        target_para.paragraph_format.left_indent = Pt(0)
-        target_para.paragraph_format.right_indent = Pt(0)
-        target_para.paragraph_format.first_line_indent = Pt(0)
-        target_para.paragraph_format.line_spacing = 1.0
-        target_para.paragraph_format.space_before = Pt(0)
-        target_para.paragraph_format.space_after = Pt(0)
+        # Копируем ВСЁ форматирование из эталона
+        target_para.paragraph_format.left_indent = style_info['left_indent']
+        target_para.paragraph_format.right_indent = style_info['right_indent']
+        target_para.paragraph_format.first_line_indent = style_info['first_line_indent']
+        target_para.paragraph_format.line_spacing = style_info['line_spacing']
+        target_para.paragraph_format.space_before = style_info['space_before']
+        target_para.paragraph_format.space_after = style_info['space_after']
+        target_para.paragraph_format.alignment = style_info['alignment']
 
     def _replace_document_content(self, doc: Document, new_content: str) -> None:
         """
@@ -323,9 +393,9 @@ class ArchiveService:
 
         Стратегия:
         1. Находим начало основного содержимого (после логотипа и заголовка)
-        2. Получаем базовый шрифт из первого параграфа шаблона
+        2. СОХРАНЯЕМ все стили параграфов из базового шаблона
         3. Удаляем все старые параграфы содержимого
-        4. Вставляем новый текст с минимальным форматированием (плотно, как в оригинале)
+        4. Для каждой новой строки находим подходящий стиль из шаблона и применяем его
 
         Args:
             doc: Документ Word
@@ -333,7 +403,6 @@ class ArchiveService:
         """
         # Находим индекс, с которого начинается заменяемое содержимое
         start_index = 0
-        first_content_para = None
 
         for i, para in enumerate(doc.paragraphs):
             text_lower = para.text.lower().strip()
@@ -341,17 +410,10 @@ class ArchiveService:
             if 'осмотр терапевта' in text_lower or 'консультация терапевта' in text_lower:
                 # Начинаем заменять со следующего параграфа
                 start_index = i + 1
-                if start_index < len(doc.paragraphs):
-                    first_content_para = doc.paragraphs[start_index]
                 break
 
-        # Получаем базовый шрифт из первого параграфа (для всех строк одинаковый)
-        base_font_name = None
-        base_font_size = None
-        if first_content_para and first_content_para.runs:
-            ref_run = first_content_para.runs[0]
-            base_font_name = ref_run.font.name
-            base_font_size = ref_run.font.size
+        # КРИТИЧЕСКИ ВАЖНО: Сохраняем все стили из шаблона ПЕРЕД удалением!
+        template_styles = self._collect_paragraph_styles_from_template(doc, start_index)
 
         # Удаляем все параграфы после заголовка (старое содержимое)
         paragraphs_to_remove = list(doc.paragraphs[start_index:])
@@ -361,19 +423,29 @@ class ArchiveService:
 
         # Парсим и вставляем новое содержимое
         for line in new_content.split('\n'):
-            # Создаём новый параграф с минимальным форматированием
+            # Создаём новый параграф
             new_para = doc.add_paragraph()
-            self._copy_paragraph_format(new_para, None)
 
-            # Парсим markdown и вставляем текст с форматированием
+            # Находим подходящий стиль из сохранённых стилей шаблона
+            matching_style = self._find_matching_style(line, template_styles)
+
+            # Применяем форматирование параграфа из эталона
+            self._apply_paragraph_style(new_para, matching_style)
+
+            # Парсим markdown и вставляем текст с форматированием runs
             segments = self._parse_markdown_formatting(line)
 
             for segment_text, is_bold in segments:
                 run = new_para.add_run(segment_text)
-                if base_font_name:
-                    run.font.name = base_font_name
-                if base_font_size:
-                    run.font.size = base_font_size
+
+                # Берём шрифт и размер из найденного стиля
+                if matching_style:
+                    if matching_style['font_name']:
+                        run.font.name = matching_style['font_name']
+                    if matching_style['font_size']:
+                        run.font.size = matching_style['font_size']
+
+                # Жирность берём из markdown
                 run.font.bold = is_bold
 
     def _generate_filename(self, template: ExaminationTemplate) -> str:
