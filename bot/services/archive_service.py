@@ -259,34 +259,58 @@ class ArchiveService:
         Заменяет текстовое содержимое документа, сохраняя форматирование и структуру
 
         Стратегия:
-        1. Удаляем все текстовые параграфы (кроме заголовков и логотипов)
-        2. Добавляем новое содержимое с сохранением базовых стилей
+        1. Находим начало основного содержимого (после логотипа и заголовка)
+        2. Заменяем текст в существующих параграфах, сохраняя их стили и форматирование
+        3. Если новых строк больше - добавляем параграфы
+        4. Если старых параграфов больше - удаляем лишние
 
         Args:
             doc: Документ Word
             new_content: Новое текстовое содержимое
         """
-        # Находим индекс, после которого начинается основное содержимое
-        # (пропускаем заголовок документа и логотип)
+        # Разбиваем новое содержимое на строки
+        new_lines = new_content.split('\n')
+
+        # Находим индекс, с которого начинается заменяемое содержимое
+        # (пропускаем заголовок документа, логотип и другие служебные элементы)
         start_index = 0
         for i, para in enumerate(doc.paragraphs):
-            # Ищем первый параграф с датой консультации или похожим маркером
-            if any(marker in para.text.lower() for marker in ['дата консультации', 'дата:', 'фио пациента']):
+            text_lower = para.text.lower()
+            # Ищем первый параграф с датой консультации
+            if any(marker in text_lower for marker in ['дата консультации:', 'дата:', 'фио пациента:', 'ф.и.о. пациента:']):
                 start_index = i
                 break
 
-        # Удаляем старые параграфы с содержимым, сохраняя заголовок
-        paragraphs_to_remove = []
-        for i in range(start_index, len(doc.paragraphs)):
-            paragraphs_to_remove.append(doc.paragraphs[i])
+        # Получаем существующие параграфы, которые будем заменять
+        editable_paragraphs = doc.paragraphs[start_index:]
 
-        for para in paragraphs_to_remove:
-            p = para._element
-            p.getparent().remove(p)
+        # Заменяем текст в существующих параграфах, сохраняя стили
+        for i, new_line in enumerate(new_lines):
+            if i < len(editable_paragraphs):
+                # Заменяем текст существующего параграфа, сохраняя форматирование
+                para = editable_paragraphs[i]
 
-        # Добавляем новое содержимое
-        for line in new_content.split('\n'):
-            doc.add_paragraph(line)
+                # Очищаем все runs в параграфе
+                for run in para.runs:
+                    run.text = ''
+
+                # Добавляем новый текст
+                if para.runs:
+                    # Используем существующий run с его форматированием
+                    para.runs[0].text = new_line
+                else:
+                    # Создаем новый run
+                    para.add_run(new_line)
+            else:
+                # Добавляем новый параграф, если строк больше
+                doc.add_paragraph(new_line)
+
+        # Удаляем лишние параграфы, если их больше чем новых строк
+        if len(new_lines) < len(editable_paragraphs):
+            for i in range(len(new_lines), len(editable_paragraphs)):
+                para = editable_paragraphs[i]
+                p = para._element
+                p.getparent().remove(p)
 
     def _generate_filename(self, template: ExaminationTemplate) -> str:
         """
