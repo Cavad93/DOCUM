@@ -343,40 +343,19 @@ class ArchiveService:
 
         # Парсим и вставляем новое содержимое
         for line in new_content.split('\n'):
-            # Проверяем нумерованный список (1., 2., и т.д.)
-            list_match = re.match(r'^(\d+)\.\s+(.+)$', line.strip())
+            # Создаём обычный параграф (без стилей, которых может не быть в шаблоне)
+            new_para = doc.add_paragraph()
 
-            if list_match:
-                # Нумерованный список
-                number = list_match.group(1)
-                text = list_match.group(2)
-                new_para = doc.add_paragraph(style='List Number')
+            # Парсим markdown для определения жирного/обычного текста
+            segments = self._parse_markdown_formatting(line)
 
-                # Парсим markdown в тексте элемента списка
-                segments = self._parse_markdown_formatting(text)
-                new_para.clear()  # Очищаем дефолтный текст
-
-                for segment_text, is_bold in segments:
-                    run = new_para.add_run(segment_text)
-                    if base_font_name:
-                        run.font.name = base_font_name
-                    if base_font_size:
-                        run.font.size = base_font_size
-                    run.font.bold = is_bold
-            else:
-                # Обычный параграф
-                new_para = doc.add_paragraph()
-
-                # Парсим markdown для определения жирного/обычного текста
-                segments = self._parse_markdown_formatting(line)
-
-                for segment_text, is_bold in segments:
-                    run = new_para.add_run(segment_text)
-                    if base_font_name:
-                        run.font.name = base_font_name
-                    if base_font_size:
-                        run.font.size = base_font_size
-                    run.font.bold = is_bold
+            for segment_text, is_bold in segments:
+                run = new_para.add_run(segment_text)
+                if base_font_name:
+                    run.font.name = base_font_name
+                if base_font_size:
+                    run.font.size = base_font_size
+                run.font.bold = is_bold
 
     def _generate_filename(self, template: ExaminationTemplate) -> str:
         """
