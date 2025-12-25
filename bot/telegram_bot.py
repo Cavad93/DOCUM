@@ -2,7 +2,9 @@ import asyncio
 import base64
 import re
 import uuid
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Dict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,6 +16,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from docx import Document
 
 from bot.models.types import PatientData, ClinicMode, BotState, BotContext, ExaminationTemplate, CurrentTemplate
 from bot.services.claude_service import ClaudeService
@@ -79,6 +82,51 @@ class MedicalBot:
                 state=BotState.IDLE,
             )
         return self.user_contexts[user_id]
+
+    def _create_docx_file(self, template_content: str, patient_data: PatientData, clinic: ClinicMode) -> str:
+        """
+        Создание .docx файла из текстового содержимого шаблона
+
+        Args:
+            template_content: Текстовое содержимое шаблона с markdown разметкой
+            patient_data: Данные пациента
+            clinic: Режим клиники
+
+        Returns:
+            Путь к созданному временному .docx файлу
+        """
+        # Получаем путь к базовому шаблону клиники
+        templates_dir = Path(__file__).parent.parent / "data" / "templates"
+
+        if clinic == ClinicMode.DINASTIYA:
+            base_template_path = templates_dir / "dinastiya" / "Артемьева+.docx"
+        elif clinic == ClinicMode.PSKP:
+            base_template_path = templates_dir / "pskp" / "Митина Н.А.docx"
+        else:
+            raise ValueError(f"Неизвестная клиника: {clinic}")
+
+        if not base_template_path.exists():
+            raise FileNotFoundError(f"Базовый шаблон не найден: {base_template_path}")
+
+        # Создаем временный файл
+        temp_file = tempfile.NamedTemporaryFile(mode='w+b', suffix='.docx', delete=False)
+        temp_filepath = temp_file.name
+        temp_file.close()
+
+        # Копируем базовый шаблон
+        import shutil
+        shutil.copy2(str(base_template_path), temp_filepath)
+
+        # Открываем скопированный документ
+        doc = Document(temp_filepath)
+
+        # Используем метод archive_service для замены содержимого
+        self.archive_service._replace_document_content(doc, template_content)
+
+        # Сохраняем
+        doc.save(temp_filepath)
+
+        return temp_filepath
 
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /start"""
@@ -320,6 +368,7 @@ class MedicalBot:
 
     async def _generate_and_show_template(self, message, user_context: BotContext, patient_data: PatientData):
         """Генерация и показ шаблона с кнопками подтверждения"""
+        temp_filepath = None
         try:
             # ЛОКАЛЬНЫЙ поиск подходящего шаблона в архиве БЕЗ использования AI
             # Если найден - используем его как образец
@@ -347,18 +396,34 @@ class MedicalBot:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            # Отправляем шаблон
-            await message.reply_text(
-                f"✅ Шаблон осмотра создан для клиники \"{user_context.clinic.value}\"!\n\n{template_content}",
-                reply_markup=reply_markup,
-            )
+            # Создаем .docx файл из шаблона
+            await message.reply_text("📄 Создаю документ...")
+            temp_filepath = self._create_docx_file(template_content, patient_data, user_context.clinic)
 
-            await message.reply_text("👆 Проверьте шаблон и выберите действие:", reply_markup=reply_markup)
+            # Формируем имя файла для отправки
+            safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in patient_data.full_name)
+            filename = f"{safe_name}_осмотр_{datetime.now().strftime('%d.%m.%Y')}.docx"
+
+            # Отправляем файл
+            with open(temp_filepath, 'rb') as doc_file:
+                await message.reply_document(
+                    document=doc_file,
+                    filename=filename,
+                    caption=f"✅ Шаблон осмотра создан для клиники \"{user_context.clinic.value}\"!\n\nПроверьте документ и выберите действие:",
+                    reply_markup=reply_markup,
+                )
 
         except Exception as e:
             print(f"Ошибка генерации шаблона: {e}")
             await message.reply_text("❌ Ошибка создания шаблона. Попробуйте еще раз.")
             user_context.state = BotState.IDLE
+        finally:
+            # Удаляем временный файл
+            if temp_filepath and Path(temp_filepath).exists():
+                try:
+                    Path(temp_filepath).unlink()
+                except Exception as e:
+                    print(f"Ошибка удаления временного файла: {e}")
 
     async def _handle_corrections(self, message, user_context: BotContext, corrections: str):
         """Обработка комментариев для правок"""
@@ -367,6 +432,7 @@ class MedicalBot:
             user_context.state = BotState.IDLE
             return
 
+        temp_filepath = None
         try:
             await message.reply_text("🔄 Вношу исправления...")
 
@@ -393,15 +459,38 @@ class MedicalBot:
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
-            # Отправляем исправленный шаблон
-            await message.reply_text(f"✅ Шаблон исправлен!\n\n{corrected_template}", reply_markup=reply_markup)
+            # Создаем .docx файл из исправленного шаблона
+            await message.reply_text("📄 Создаю исправленный документ...")
+            temp_filepath = self._create_docx_file(
+                corrected_template,
+                user_context.current_template.patient_data,
+                user_context.clinic
+            )
 
-            await message.reply_text("👆 Проверьте исправленный шаблон:", reply_markup=reply_markup)
+            # Формируем имя файла для отправки
+            safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in user_context.current_template.patient_data.full_name)
+            filename = f"{safe_name}_осмотр_исправлен_{datetime.now().strftime('%d.%m.%Y')}.docx"
+
+            # Отправляем файл
+            with open(temp_filepath, 'rb') as doc_file:
+                await message.reply_document(
+                    document=doc_file,
+                    filename=filename,
+                    caption=f"✅ Шаблон исправлен (правка #{user_context.corrections_count})!\n\nПроверьте исправленный документ:",
+                    reply_markup=reply_markup,
+                )
 
         except Exception as e:
             print(f"Ошибка исправления шаблона: {e}")
             await message.reply_text("❌ Ошибка исправления шаблона. Попробуйте еще раз.")
             user_context.state = BotState.AWAITING_CONFIRMATION
+        finally:
+            # Удаляем временный файл
+            if temp_filepath and Path(temp_filepath).exists():
+                try:
+                    Path(temp_filepath).unlink()
+                except Exception as e:
+                    print(f"Ошибка удаления временного файла: {e}")
 
     async def _save_template(self, message, user_context: BotContext):
         """Сохранение шаблона в архив"""
