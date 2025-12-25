@@ -371,21 +371,34 @@ class ArchiveService:
         """
         Применяет сохранённый стиль к параграфу
 
+        УМНАЯ ЛОГИКА:
+        - Отступы (left, right, first_line) - копируем индивидуально из шаблона
+        - Интервалы (space_before, space_after) - минимальные для плотного текста
+        - Междустрочный интервал - одинарный
+        - Выравнивание - из шаблона
+
         Args:
             target_para: Целевой параграф
             style_info: dict с информацией о стиле из шаблона
         """
+        from docx.shared import Pt
+
         if not style_info:
             return
 
-        # Копируем ВСЁ форматирование из эталона
+        # КОПИРУЕМ ТОЛЬКО ОТСТУПЫ индивидуально для каждого типа строки
+        # Это важно для списков, которые должны иметь свои отступы
         target_para.paragraph_format.left_indent = style_info['left_indent']
         target_para.paragraph_format.right_indent = style_info['right_indent']
         target_para.paragraph_format.first_line_indent = style_info['first_line_indent']
-        target_para.paragraph_format.line_spacing = style_info['line_spacing']
-        target_para.paragraph_format.space_before = style_info['space_before']
-        target_para.paragraph_format.space_after = style_info['space_after']
+
+        # Выравнивание также берём из шаблона
         target_para.paragraph_format.alignment = style_info['alignment']
+
+        # ИНТЕРВАЛЫ - минимальные для плотного текста (НЕ из шаблона!)
+        target_para.paragraph_format.line_spacing = 1.0  # Одинарный междустрочный
+        target_para.paragraph_format.space_before = Pt(0)  # Без отступа сверху
+        target_para.paragraph_format.space_after = Pt(0)   # Без отступа снизу
 
     def _replace_document_content(self, doc: Document, new_content: str) -> None:
         """
