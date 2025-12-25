@@ -348,21 +348,28 @@ class ArchiveService:
         """
         Копирует форматирование параграфа из источника в целевой параграф
 
+        Копирует только необходимое форматирование, БЕЗ больших интервалов
+
         Args:
             target_para: Целевой параграф
             source_para: Исходный параграф (эталон)
         """
+        from docx.shared import Pt
+
         if not source_para or not source_para.runs:
             return
 
-        # Копируем форматирование параграфа
+        # Копируем только отступы и выравнивание (БЕЗ space_before/space_after!)
         target_para.paragraph_format.left_indent = source_para.paragraph_format.left_indent
-        target_para.paragraph_format.right_indent = source_para.paragraph_format.right_indent
         target_para.paragraph_format.first_line_indent = source_para.paragraph_format.first_line_indent
-        target_para.paragraph_format.line_spacing = source_para.paragraph_format.line_spacing
-        target_para.paragraph_format.space_before = source_para.paragraph_format.space_before
-        target_para.paragraph_format.space_after = source_para.paragraph_format.space_after
         target_para.paragraph_format.alignment = source_para.paragraph_format.alignment
+
+        # Междустрочный интервал - одинарный для плотности
+        target_para.paragraph_format.line_spacing = 1.0
+
+        # Минимальные интервалы до/после параграфа для плотного текста
+        target_para.paragraph_format.space_before = Pt(0)
+        target_para.paragraph_format.space_after = Pt(0)
 
     def _replace_document_content(self, doc: Document, new_content: str) -> None:
         """
