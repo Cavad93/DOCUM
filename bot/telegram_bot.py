@@ -379,14 +379,14 @@ class MedicalBot:
         for line in lines:
             line = line.strip()
 
-            if re.match(r"^фио:", line, re.IGNORECASE):
-                data["full_name"] = re.sub(r"^фио:\s*", "", line, flags=re.IGNORECASE).strip()
-            elif re.match(r"^дата рождения:", line, re.IGNORECASE):
-                data["birth_date"] = re.sub(r"^дата рождения:\s*", "", line, flags=re.IGNORECASE).strip()
-            elif re.match(r"^снилс:", line, re.IGNORECASE):
-                data["snils"] = re.sub(r"^снилс:\s*", "", line, flags=re.IGNORECASE).strip()
-            elif re.match(r"^диагноз:", line, re.IGNORECASE):
-                data["diagnosis"] = re.sub(r"^диагноз:\s*", "", line, flags=re.IGNORECASE).strip()
+            if re.match(r"^фио\s*:", line, re.IGNORECASE):
+                data["full_name"] = re.sub(r"^фио\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+            elif re.match(r"^дата рождения\s*:", line, re.IGNORECASE):
+                data["birth_date"] = re.sub(r"^дата рождения\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+            elif re.match(r"^снилс\s*:", line, re.IGNORECASE):
+                data["snils"] = re.sub(r"^снилс\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+            elif re.match(r"^диагноз\s*:", line, re.IGNORECASE):
+                data["diagnosis"] = re.sub(r"^диагноз\s*:\s*", "", line, flags=re.IGNORECASE).strip()
 
         return data
 
