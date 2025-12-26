@@ -16,6 +16,7 @@ class BotState(str, Enum):
     AWAITING_DATA = "awaiting_data"
     AWAITING_CONFIRMATION = "awaiting_confirmation"
     AWAITING_CORRECTIONS = "awaiting_corrections"
+    AWAITING_PHOTO = "awaiting_photo"  # Ожидание фото осмотра для email
 
 
 @dataclass
@@ -56,3 +57,5 @@ class BotContext:
     patient_data: Optional[dict] = None
     current_template: Optional[CurrentTemplate] = None
     corrections_count: int = 0  # Счетчик итераций правок
+    saved_document_path: Optional[str] = None  # Путь к сохраненному документу для email
+    examination_photos: Optional[list] = None  # Фото осмотра для email вложений

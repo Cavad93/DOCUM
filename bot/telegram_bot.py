@@ -398,10 +398,53 @@ class MedicalBot:
                 "Убрать из назначений...\""
             )
 
+        elif data == "add_photo":
+            # Пользователь хочет добавить фото осмотра
+            await query.message.reply_text(
+                "📷 Отправьте фото осмотра (можно несколько фотографий).\n\n"
+                "После отправки всех фото нажмите кнопку ниже:",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Готово, отправить email", callback_data="send_with_photos")
+                ]])
+            )
+
+        elif data == "send_without_photo":
+            # Отправка email без фото
+            await self._send_email_without_photos(query.message, user_context)
+
+        elif data == "send_with_photos":
+            # Отправка email с фото
+            await self._send_email_with_photos(query.message, user_context)
+
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка фото документа"""
         user_id = update.effective_user.id
         user_context = self._get_or_create_context(user_id)
+
+        # Если ожидаем фото осмотра для email
+        if user_context.state == BotState.AWAITING_PHOTO:
+            try:
+                # Получаем фото наилучшего качества
+                photo = update.message.photo[-1]
+                file = await context.bot.get_file(photo.file_id)
+
+                # Скачиваем фото
+                photo_bytes = await file.download_as_bytearray()
+
+                # Сохраняем фото в список
+                if user_context.examination_photos is None:
+                    user_context.examination_photos = []
+                user_context.examination_photos.append(photo_bytes)
+
+                await update.message.reply_text(
+                    f"✅ Фото {len(user_context.examination_photos)} добавлено!\n\n"
+                    "Можете отправить ещё фото или нажмите кнопку \"Готово\"."
+                )
+                return
+            except Exception as e:
+                print(f"Ошибка сохранения фото осмотра: {e}")
+                await update.message.reply_text("❌ Ошибка сохранения фото. Попробуйте ещё раз.")
+                return
 
         # Игнорируем фото если ожидаем подтверждения или правок
         if user_context.state in [BotState.AWAITING_CONFIRMATION, BotState.AWAITING_CORRECTIONS]:
@@ -687,26 +730,51 @@ class MedicalBot:
 
             # Отправка email (если настроен)
             if self.email_service:
-                await message.reply_text("📧 Отправляю документ по email...")
-                examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
-                clinic_name = "Династия" if user_context.clinic == ClinicMode.DINASTIYA else "ПСКП"
+                # Для Династии спрашиваем о фото осмотра
+                if user_context.clinic == ClinicMode.DINASTIYA:
+                    # Сохраняем путь к документу для последующей отправки
+                    user_context.saved_document_path = temp_filepath
+                    user_context.examination_photos = []
+                    user_context.state = BotState.AWAITING_PHOTO
 
-                success, error = await self.email_service.send_document(
-                    file_path=temp_filepath,
-                    patient_name=template.patient_data.full_name,
-                    examination_date=examination_date,
-                    clinic=user_context.clinic.value,
-                    doctor_name="Гаджимурадлы Д.Д"
-                )
+                    # Создаем кнопки выбора
+                    keyboard = [
+                        [
+                            InlineKeyboardButton("📷 Добавить фото осмотра", callback_data="add_photo"),
+                            InlineKeyboardButton("📧 Отправить без фото", callback_data="send_without_photo"),
+                        ]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
 
-                if success:
-                    recipients = self.email_service.get_recipients(clinic=user_context.clinic.value)
                     await message.reply_text(
-                        f"✅ Email отправлен для клиники \"{clinic_name}\"!\n"
-                        f"Получатели: {', '.join(recipients)}"
+                        "📧 Отправка по email\n\n"
+                        "Хотите добавить фото осмотра к письму?",
+                        reply_markup=reply_markup
                     )
+                    # НЕ удаляем temp_filepath - он нужен для отправки email
+                    return
                 else:
-                    await message.reply_text(f"⚠️ Ошибка отправки email:\n{error}")
+                    # Для ПСКП отправляем сразу без фото
+                    await message.reply_text("📧 Отправляю документ по email...")
+                    examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
+                    clinic_name = "ПСКП"
+
+                    success, error = await self.email_service.send_document(
+                        file_path=temp_filepath,
+                        patient_name=template.patient_data.full_name,
+                        examination_date=examination_date,
+                        clinic=user_context.clinic.value,
+                        doctor_name="Гаджимурадлы Д.Д"
+                    )
+
+                    if success:
+                        recipients = self.email_service.get_recipients(clinic=user_context.clinic.value)
+                        await message.reply_text(
+                            f"✅ Email отправлен для клиники \"{clinic_name}\"!\n"
+                            f"Получатели: {', '.join(recipients)}"
+                        )
+                    else:
+                        await message.reply_text(f"⚠️ Ошибка отправки email:\n{error}")
 
             # Сообщение о готовности к следующему пациенту
             await message.reply_text("✅ Можете отправить данные следующего пациента.")
@@ -794,6 +862,110 @@ class MedicalBot:
                         print(f"✓ ЭЛН дней (число): {days_value}")
 
         return data
+
+    async def _send_email_without_photos(self, message, user_context: BotContext):
+        """Отправка email без фото осмотра"""
+        try:
+            if not user_context.current_template:
+                await message.reply_text("❌ Ошибка: шаблон не найден")
+                return
+
+            await message.reply_text("📧 Отправляю документ по email...")
+
+            template = user_context.current_template
+            examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
+
+            success, error = await self.email_service.send_document(
+                file_path=user_context.saved_document_path,
+                patient_name=template.patient_data.full_name,
+                examination_date=examination_date,
+                clinic=user_context.clinic.value,
+                doctor_name="Гаджимурадлы Д.Д"
+            )
+
+            if success:
+                recipients = self.email_service.get_recipients(clinic=user_context.clinic.value)
+                await message.reply_text(
+                    f"✅ Email отправлен для клиники \"Династия\"!\n"
+                    f"Получатели: {', '.join(recipients)}"
+                )
+            else:
+                await message.reply_text(f"⚠️ Ошибка отправки email:\n{error}")
+
+            # Очищаем контекст и удаляем временный файл
+            await self._cleanup_after_email(user_context)
+
+            await message.reply_text("✅ Можете отправить данные следующего пациента.")
+
+        except Exception as e:
+            print(f"Ошибка отправки email: {e}")
+            await message.reply_text("❌ Ошибка отправки email")
+            await self._cleanup_after_email(user_context)
+
+    async def _send_email_with_photos(self, message, user_context: BotContext):
+        """Отправка email с фото осмотра"""
+        try:
+            if not user_context.current_template:
+                await message.reply_text("❌ Ошибка: шаблон не найден")
+                return
+
+            if not user_context.examination_photos or len(user_context.examination_photos) == 0:
+                await message.reply_text("⚠️ Вы не добавили ни одного фото. Отправляю без фото...")
+                await self._send_email_without_photos(message, user_context)
+                return
+
+            await message.reply_text(
+                f"📧 Отправляю документ с {len(user_context.examination_photos)} фото по email..."
+            )
+
+            template = user_context.current_template
+            examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
+
+            success, error = await self.email_service.send_document(
+                file_path=user_context.saved_document_path,
+                patient_name=template.patient_data.full_name,
+                examination_date=examination_date,
+                clinic=user_context.clinic.value,
+                doctor_name="Гаджимурадлы Д.Д",
+                photos=user_context.examination_photos
+            )
+
+            if success:
+                recipients = self.email_service.get_recipients(clinic=user_context.clinic.value)
+                await message.reply_text(
+                    f"✅ Email отправлен для клиники \"Династия\"!\n"
+                    f"Получатели: {', '.join(recipients)}\n"
+                    f"Прикреплено: документ + {len(user_context.examination_photos)} фото"
+                )
+            else:
+                await message.reply_text(f"⚠️ Ошибка отправки email:\n{error}")
+
+            # Очищаем контекст и удаляем временный файл
+            await self._cleanup_after_email(user_context)
+
+            await message.reply_text("✅ Можете отправить данные следующего пациента.")
+
+        except Exception as e:
+            print(f"Ошибка отправки email с фото: {e}")
+            await message.reply_text("❌ Ошибка отправки email")
+            await self._cleanup_after_email(user_context)
+
+    async def _cleanup_after_email(self, user_context: BotContext):
+        """Очистка контекста и удаление временных файлов после отправки email"""
+        # Удаляем временный файл документа
+        if user_context.saved_document_path and Path(user_context.saved_document_path).exists():
+            try:
+                Path(user_context.saved_document_path).unlink()
+            except Exception as e:
+                print(f"Ошибка удаления временного файла: {e}")
+
+        # Очищаем контекст
+        user_context.state = BotState.IDLE
+        user_context.current_template = None
+        user_context.patient_data = None
+        user_context.corrections_count = 0
+        user_context.saved_document_path = None
+        user_context.examination_photos = None
 
     def run(self):
         """Запуск бота с обработкой ошибок подключения"""

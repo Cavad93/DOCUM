@@ -140,7 +140,8 @@ class EmailService:
         patient_name: str,
         examination_date: str,
         clinic: str = "dinastiya",
-        doctor_name: str = "Гаджимурадлы Д.Д"
+        doctor_name: str = "Гаджимурадлы Д.Д",
+        photos: Optional[List[bytes]] = None
     ) -> tuple[bool, str]:
         """
         Отправить документ по email всем получателям клиники
@@ -151,6 +152,7 @@ class EmailService:
             examination_date: Дата осмотра
             clinic: Название клиники ("dinastiya" или "pskp")
             doctor_name: ФИО врача (уже сокращённое)
+            photos: Список фото осмотра (опционально, только для Династии)
 
         Returns:
             Tuple (успех, сообщение об ошибке или None)
@@ -177,11 +179,12 @@ class EmailService:
             msg['Subject'] = subject
 
             # Текст письма
+            photos_info = f"\nФото осмотра: {len(photos)} шт." if photos else ""
             body = f"""Медицинский осмотр
 
 Пациент: {patient_name}
 Дата осмотра: {examination_date}
-Врач: {doctor_name}
+Врач: {doctor_name}{photos_info}
 
 Документ во вложении.
 """
@@ -191,11 +194,20 @@ class EmailService:
             safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in patient_name)
             filename = f"{safe_name}_ГОТОВЫЙ_ОСМОТР_{examination_date.replace('.', '-')}.docx"
 
-            # Прикрепляем файл
+            # Прикрепляем файл документа
             with open(file_path, 'rb') as f:
                 attachment = MIMEApplication(f.read(), _subtype="docx")
                 attachment.add_header('Content-Disposition', 'attachment', filename=filename)
                 msg.attach(attachment)
+
+            # Прикрепляем фото осмотра (если есть)
+            if photos:
+                for i, photo_bytes in enumerate(photos, 1):
+                    photo_attachment = MIMEApplication(photo_bytes, _subtype="jpeg")
+                    photo_filename = f"{safe_name}_фото_{i}.jpg"
+                    photo_attachment.add_header('Content-Disposition', 'attachment', filename=photo_filename)
+                    msg.attach(photo_attachment)
+                print(f"✓ Прикреплено {len(photos)} фото осмотра")
 
             # Отправляем через Yandex SMTP
             with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
