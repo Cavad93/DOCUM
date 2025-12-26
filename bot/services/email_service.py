@@ -187,10 +187,14 @@ class EmailService:
 """
             msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
+            # Формируем имя файла для вложения (по ФИО пациента)
+            safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in patient_name)
+            filename = f"{safe_name}_ГОТОВЫЙ_ОСМОТР_{examination_date.replace('.', '-')}.docx"
+
             # Прикрепляем файл
             with open(file_path, 'rb') as f:
                 attachment = MIMEApplication(f.read(), _subtype="docx")
-                attachment.add_header('Content-Disposition', 'attachment', filename=Path(file_path).name)
+                attachment.add_header('Content-Disposition', 'attachment', filename=filename)
                 msg.attach(attachment)
 
             # Отправляем через Yandex SMTP
