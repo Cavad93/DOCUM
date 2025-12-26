@@ -586,6 +586,7 @@ class MedicalBot:
                 data["illness_start_date"] = re.sub(r"^начало болезни\s*:\s*", "", line, flags=re.IGNORECASE).strip()
             elif re.match(r"^элн\s*:", line, re.IGNORECASE):
                 # Парсим "ЭЛН: 5 дней" или "ЭЛН: 5" или "ЭЛН: отказ"
+                # или "ЭЛН: 910317368797 срок с 26.12 по 30.12.2025"
                 eln_text = re.sub(r"^элн\s*:\s*", "", line, flags=re.IGNORECASE).strip().lower()
                 print(f"🔍 Парсинг ЭЛН: '{line}' -> '{eln_text}'")
 
@@ -595,13 +596,37 @@ class MedicalBot:
                     data["sick_leave_days"] = None
                     print(f"✓ ЭЛН отказ распознан")
                 else:
-                    # Извлекаем число (только первые 3 цифры для безопасности)
-                    match = re.search(r"(\d{1,3})", eln_text)
-                    if match:
-                        days_value = int(match.group(1))
+                    # Пытаемся извлечь срок из формата "срок с ДД.ММ по ДД.ММ"
+                    date_range_match = re.search(r"срок\s+с\s+(\d{2}\.\d{2}).*?по\s+(\d{2}\.\d{2})", eln_text)
+                    if date_range_match:
+                        from datetime import datetime
+                        try:
+                            start_str = date_range_match.group(1)
+                            end_str = date_range_match.group(2)
+                            # Добавляем текущий год
+                            current_year = datetime.now().year
+                            start_date = datetime.strptime(f"{start_str}.{current_year}", "%d.%m.%Y")
+                            end_date = datetime.strptime(f"{end_str}.{current_year}", "%d.%m.%Y")
+                            days_value = (end_date - start_date).days + 1  # Включительно
+                            data["sick_leave_days"] = days_value
+                            data["eln_refused"] = False
+                            print(f"✓ ЭЛН срок: с {start_str} по {end_str} = {days_value} дней")
+                        except Exception as e:
+                            print(f"⚠️ Ошибка парсинга дат ЭЛН: {e}")
+                    # Или ищем "N дней/дня"
+                    elif re.search(r"(\d{1,2})\s*(?:день|дня|дней)", eln_text):
+                        days_match = re.search(r"(\d{1,2})\s*(?:день|дня|дней)", eln_text)
+                        days_value = int(days_match.group(1))
                         data["sick_leave_days"] = days_value
                         data["eln_refused"] = False
                         print(f"✓ ЭЛН дней: {days_value}")
+                    # Или просто число (НЕ СНИЛС - не больше 2 цифр)
+                    elif re.search(r"\b(\d{1,2})\b", eln_text):
+                        match = re.search(r"\b(\d{1,2})\b", eln_text)
+                        days_value = int(match.group(1))
+                        data["sick_leave_days"] = days_value
+                        data["eln_refused"] = False
+                        print(f"✓ ЭЛН дней (число): {days_value}")
 
         return data
 
