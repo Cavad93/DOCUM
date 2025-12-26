@@ -34,34 +34,58 @@ class ClaudeService:
         """Загрузка готовых шаблонов из файлов (.docx или .txt)"""
         try:
             templates_dir = Path(__file__).parent.parent.parent / "data" / "templates"
+            print(f"📁 Директория шаблонов: {templates_dir}")
+            print(f"📁 Существует: {templates_dir.exists()}")
 
             # Загрузка шаблона Династии (приоритет .docx)
             dinastiya_dir = templates_dir / "dinastiya"
             dinastiya_docx = dinastiya_dir / "Артемьева+.docx"
             dinastiya_txt = dinastiya_dir / "template.txt"
 
+            print(f"📄 Проверка Династия: {dinastiya_docx}")
+            print(f"📄 Файл существует: {dinastiya_docx.exists()}")
+
             if dinastiya_docx.exists():
-                self.template_cache[ClinicMode.DINASTIYA] = self._read_docx(dinastiya_docx)
-                print(f"✓ Загружен шаблон Династии (Артемьева+.docx)")
+                content = self._read_docx(dinastiya_docx)
+                print(f"📝 Прочитано символов: {len(content)}")
+                if content:
+                    self.template_cache[ClinicMode.DINASTIYA] = content
+                    print(f"✓ Загружен шаблон Династии (Артемьева+.docx)")
+                else:
+                    print(f"⚠️ Файл прочитан, но содержимое пустое")
             elif dinastiya_txt.exists():
                 self.template_cache[ClinicMode.DINASTIYA] = dinastiya_txt.read_text(encoding="utf-8")
                 print(f"✓ Загружен шаблон Династии (template.txt)")
+            else:
+                print(f"❌ Шаблон Династии не найден")
 
             # Загрузка шаблона ПСКП (приоритет .docx)
             pskp_dir = templates_dir / "pskp"
             pskp_docx = pskp_dir / "Митина Н.А.docx"
             pskp_txt = pskp_dir / "template.txt"
 
+            print(f"📄 Проверка ПСКП: {pskp_docx}")
+            print(f"📄 Файл существует: {pskp_docx.exists()}")
+
             if pskp_docx.exists():
-                self.template_cache[ClinicMode.PSKP] = self._read_docx(pskp_docx)
-                print(f"✓ Загружен шаблон ПСКП (Митина Н.А.docx)")
+                content = self._read_docx(pskp_docx)
+                print(f"📝 Прочитано символов: {len(content)}")
+                if content:
+                    self.template_cache[ClinicMode.PSKP] = content
+                    print(f"✓ Загружен шаблон ПСКП (Митина Н.А.docx)")
+                else:
+                    print(f"⚠️ Файл прочитан, но содержимое пустое")
             elif pskp_txt.exists():
                 self.template_cache[ClinicMode.PSKP] = pskp_txt.read_text(encoding="utf-8")
                 print(f"✓ Загружен шаблон ПСКП (template.txt)")
+            else:
+                print(f"❌ Шаблон ПСКП не найден")
 
             print(f"✓ Шаблоны успешно загружены ({len(self.template_cache)})")
         except Exception as e:
             print(f"Ошибка загрузки шаблонов: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _read_docx(self, path: Path) -> str:
         """
