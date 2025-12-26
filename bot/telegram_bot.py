@@ -789,12 +789,14 @@ class MedicalBot:
             print(f"Ошибка сохранения шаблона: {e}")
             await message.reply_text("❌ Ошибка сохранения шаблона")
         finally:
-            # Удаляем временный файл
-            if temp_filepath and Path(temp_filepath).exists():
-                try:
-                    Path(temp_filepath).unlink()
-                except Exception as e:
-                    print(f"Ошибка удаления временного файла: {e}")
+            # Удаляем временный файл только если НЕ ждем фото
+            # (если ждем фото, файл будет удален после отправки email)
+            if user_context.state != BotState.AWAITING_PHOTO:
+                if temp_filepath and Path(temp_filepath).exists():
+                    try:
+                        Path(temp_filepath).unlink()
+                    except Exception as e:
+                        print(f"Ошибка удаления временного файла: {e}")
 
     def _parse_text_data(self, text: str) -> Dict[str, str]:
         """Парсинг текстовых данных пациента"""
