@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -370,7 +371,14 @@ class MedicalBot:
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка нажатий на inline кнопки"""
         query = update.callback_query
-        await query.answer()
+
+        # Пытаемся ответить на callback query (может быть устаревшим)
+        try:
+            await query.answer()
+        except BadRequest as e:
+            # Игнорируем ошибку если query слишком старый
+            if "query is too old" not in str(e).lower():
+                raise
 
         user_id = update.effective_user.id
         user_context = self._get_or_create_context(user_id)
