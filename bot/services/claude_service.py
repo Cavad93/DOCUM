@@ -465,15 +465,27 @@ class ClaudeService:
 
 Заполните шаблон:"""
 
-            message = self.client.messages.create(
-                model=self.GENERATION_MODEL,
-                max_tokens=8192,
-                messages=[{"role": "user", "content": prompt}],
-            )
-
-            return message.content[0].text
+            try:
+                message = self.client.messages.create(
+                    model=self.GENERATION_MODEL,
+                    max_tokens=4096,  # Уменьшено для совместимости
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return message.content[0].text
+            except Exception as api_error:
+                print(f"Ошибка API Claude: {api_error}")
+                # Попытка с меньшим max_tokens
+                print("Повторная попытка с max_tokens=2048...")
+                message = self.client.messages.create(
+                    model=self.GENERATION_MODEL,
+                    max_tokens=2048,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return message.content[0].text
         except Exception as e:
             print(f"Ошибка генерации шаблона: {e}")
+            import traceback
+            traceback.print_exc()
             raise
 
     async def correct_template(

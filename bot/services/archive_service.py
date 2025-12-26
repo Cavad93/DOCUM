@@ -18,7 +18,8 @@ class ArchiveService:
         Args:
             archive_path: Путь к директории архива
         """
-        self.archive_path = Path(archive_path)
+        # Конвертируем в абсолютный путь для совместимости с Windows
+        self.archive_path = Path(archive_path).resolve()
         self._ensure_archive_exists()
 
     def _ensure_archive_exists(self) -> None:
@@ -176,7 +177,15 @@ class ArchiveService:
             Текстовое содержимое документа
         """
         try:
-            doc = Document(str(filepath))
+            # Убеждаемся что путь абсолютный
+            abs_filepath = filepath.resolve() if not filepath.is_absolute() else filepath
+
+            # Проверяем существование файла
+            if not abs_filepath.exists():
+                print(f"⚠️ Файл не существует: {abs_filepath}")
+                return ""
+
+            doc = Document(str(abs_filepath))
             paragraphs = [paragraph.text for paragraph in doc.paragraphs]
             return '\n'.join(paragraphs)
         except Exception as e:
