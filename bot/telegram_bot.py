@@ -637,6 +637,7 @@ class MedicalBot:
                 user_context.current_template.content,
                 user_context.current_template.patient_data,
                 corrections,
+                clinic=user_context.clinic,
             )
 
             # Обновляем в контексте

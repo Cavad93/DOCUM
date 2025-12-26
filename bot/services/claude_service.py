@@ -9,6 +9,7 @@ from docx import Document
 
 from bot.models.types import PatientData, ClinicMode
 from bot.services.memory_service import MemoryService
+from bot.services.corrections_memory_service import CorrectionsMemoryService
 
 
 class ClaudeService:
@@ -28,6 +29,7 @@ class ClaudeService:
         self.client = Anthropic(api_key=api_key)
         self.template_cache: Dict[ClinicMode, str] = {}
         self.memory_service = MemoryService()
+        self.corrections_memory = CorrectionsMemoryService()
         self._load_templates()
 
     def _load_templates(self) -> None:
@@ -385,13 +387,45 @@ class ClaudeService:
             call_line = f"- Дата вызова врача на дом: {call_date}\n"
             exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
 
+            # Получаем возраст пациента для поиска похожих исправлений
+            patient_age = None
+            try:
+                birth_dt = datetime.strptime(patient_data.birth_date, "%d.%m.%Y")
+                exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+                patient_age = (exam_dt - birth_dt).days // 365
+            except Exception:
+                pass
+
+            # Получаем похожие исправления из истории
+            similar_corrections = self.corrections_memory.get_similar_corrections(
+                diagnosis=patient_data.diagnosis,
+                patient_age=patient_age,
+                clinic=clinic.value,
+                limit=3
+            )
+
+            # Формируем контекст из истории исправлений
+            corrections_context = ""
+            if similar_corrections:
+                corrections_context = "\n\nАВТОМАТИЧЕСКИЕ УЛУЧШЕНИЯ НА ОСНОВЕ ВАШИХ ПРЕДПОЧТЕНИЙ:\n"
+                corrections_context += "Анализ вашей истории исправлений показывает, что для похожих случаев вы обычно вносите следующие правки:\n\n"
+
+                for i, item in enumerate(similar_corrections, 1):
+                    corr = item["correction"]
+                    score = item["relevance_score"]
+                    corrections_context += f"{i}. Диагноз: {corr['diagnosis']} (релевантность: {score:.0%})\n"
+                    corrections_context += f"   Ваша правка: {corr['correction_text'][:200]}...\n\n"
+
+                corrections_context += "ВАЖНО: Автоматически примените эти улучшения к текущему шаблону, если они релевантны!\n"
+                print(f"✓ Найдено {len(similar_corrections)} похожих исправлений для автоматического применения")
+
             prompt = f"""Вы медицинский ассистент. Ваша задача - заполнить готовый шаблон медицинского осмотра.
 
 ДАННЫЕ ПАЦИЕНТА:
 - ФИО: {patient_data.full_name}
 - Дата рождения: {patient_data.birth_date}
 {snils_line}- Диагноз: {patient_data.diagnosis}
-
+{corrections_context}
 ВАЖНЫЕ ДАТЫ:
 {illness_line}{call_line}{exam_date_line}{eln_line}{follow_up_line}
 
@@ -503,14 +537,17 @@ class ClaudeService:
         current_template: str,
         patient_data: PatientData,
         corrections: str,
+        clinic: ClinicMode = ClinicMode.DINASTIYA,
     ) -> str:
         """
         Исправление шаблона на основе комментариев пользователя
+        Автоматически сохраняет исправления в память для обучения
 
         Args:
             current_template: Текущий шаблон
             patient_data: Данные пациента
             corrections: Комментарии для исправления
+            clinic: Клиника (для сохранения в память)
 
         Returns:
             Исправленный шаблон
@@ -611,7 +648,32 @@ class ClaudeService:
                 messages=[{"role": "user", "content": prompt}],
             )
 
-            return message.content[0].text
+            corrected_template = message.content[0].text
+
+            # Сохраняем исправление в память для обучения
+            try:
+                # Вычисляем возраст пациента
+                patient_age = None
+                try:
+                    from datetime import datetime
+                    birth_dt = datetime.strptime(patient_data.birth_date, "%d.%m.%Y")
+                    exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+                    patient_age = (exam_dt - birth_dt).days // 365
+                except Exception:
+                    pass
+
+                self.corrections_memory.add_correction(
+                    diagnosis=patient_data.diagnosis,
+                    patient_age=patient_age,
+                    correction_text=corrections,
+                    original_template=current_template,
+                    corrected_template=corrected_template,
+                    clinic=clinic.value
+                )
+            except Exception as mem_error:
+                print(f"⚠️ Не удалось сохранить исправление в память: {mem_error}")
+
+            return corrected_template
         except Exception as e:
             print(f"Ошибка исправления шаблона: {e}")
             raise
