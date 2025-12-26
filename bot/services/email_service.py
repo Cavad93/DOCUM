@@ -33,65 +33,102 @@ class EmailService:
         """Создаёт файл с получателями если его нет"""
         if not self.recipients_file.exists():
             self.recipients_file.parent.mkdir(parents=True, exist_ok=True)
-            self.recipients_file.write_text(json.dumps([], ensure_ascii=False, indent=2), encoding="utf-8")
+            # Создаём структуру с разными клиниками
+            default_data = {
+                "dinastiya": [],
+                "pskp": []
+            }
+            self.recipients_file.write_text(json.dumps(default_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def get_recipients(self) -> List[str]:
+    def get_recipients(self, clinic: str = "dinastiya") -> List[str]:
         """
-        Получить список email получателей
+        Получить список email получателей для клиники
+
+        Args:
+            clinic: Название клиники ("dinastiya" или "pskp")
 
         Returns:
-            Список email адресов
+            Список email адресов для указанной клиники
         """
         try:
             data = json.loads(self.recipients_file.read_text(encoding="utf-8"))
-            return data if isinstance(data, list) else []
+
+            # Поддержка старого формата (простой список)
+            if isinstance(data, list):
+                # Мигрируем в новый формат
+                new_data = {"dinastiya": data, "pskp": []}
+                self.recipients_file.write_text(json.dumps(new_data, ensure_ascii=False, indent=2), encoding="utf-8")
+                return data if clinic == "dinastiya" else []
+
+            # Новый формат (словарь по клиникам)
+            return data.get(clinic, [])
         except Exception as e:
             print(f"Ошибка чтения списка получателей: {e}")
             return []
 
-    def add_recipient(self, email: str) -> bool:
+    def add_recipient(self, email: str, clinic: str = "dinastiya") -> bool:
         """
-        Добавить email получателя
+        Добавить email получателя для клиники
 
         Args:
             email: Email адрес
+            clinic: Название клиники ("dinastiya" или "pskp")
 
         Returns:
             True если успешно добавлен, False если уже существует
         """
         try:
-            recipients = self.get_recipients()
+            # Читаем всю структуру
+            data = json.loads(self.recipients_file.read_text(encoding="utf-8"))
+
+            # Поддержка миграции старого формата
+            if isinstance(data, list):
+                data = {"dinastiya": data, "pskp": []}
+
+            # Получаем список для клиники
+            recipients = data.get(clinic, [])
             email = email.strip().lower()
 
             if email in recipients:
                 return False
 
             recipients.append(email)
-            self.recipients_file.write_text(json.dumps(recipients, ensure_ascii=False, indent=2), encoding="utf-8")
+            data[clinic] = recipients
+            self.recipients_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             return True
         except Exception as e:
             print(f"Ошибка добавления получателя: {e}")
             return False
 
-    def remove_recipient(self, email: str) -> bool:
+    def remove_recipient(self, email: str, clinic: str = "dinastiya") -> bool:
         """
-        Удалить email получателя
+        Удалить email получателя для клиники
 
         Args:
             email: Email адрес
+            clinic: Название клиники ("dinastiya" или "pskp")
 
         Returns:
             True если успешно удалён, False если не найден
         """
         try:
-            recipients = self.get_recipients()
+            # Читаем всю структуру
+            data = json.loads(self.recipients_file.read_text(encoding="utf-8"))
+
+            # Поддержка миграции старого формата
+            if isinstance(data, list):
+                data = {"dinastiya": data, "pskp": []}
+
+            # Получаем список для клиники
+            recipients = data.get(clinic, [])
             email = email.strip().lower()
 
             if email not in recipients:
                 return False
 
             recipients.remove(email)
-            self.recipients_file.write_text(json.dumps(recipients, ensure_ascii=False, indent=2), encoding="utf-8")
+            data[clinic] = recipients
+            self.recipients_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             return True
         except Exception as e:
             print(f"Ошибка удаления получателя: {e}")
@@ -102,21 +139,23 @@ class EmailService:
         file_path: str,
         patient_name: str,
         examination_date: str,
+        clinic: str = "dinastiya",
         doctor_name: str = "Гаджимурадлы Д.Д"
     ) -> tuple[bool, str]:
         """
-        Отправить документ по email всем получателям
+        Отправить документ по email всем получателям клиники
 
         Args:
             file_path: Путь к .docx файлу
             patient_name: ФИО пациента (будет сокращено)
             examination_date: Дата осмотра
+            clinic: Название клиники ("dinastiya" или "pskp")
             doctor_name: ФИО врача (уже сокращённое)
 
         Returns:
             Tuple (успех, сообщение об ошибке или None)
         """
-        recipients = self.get_recipients()
+        recipients = self.get_recipients(clinic)
 
         if not recipients:
             return False, "Нет настроенных получателей. Используйте /add_email"

@@ -276,11 +276,18 @@ class MedicalBot:
             await update.message.reply_text("❌ Некорректный email адрес")
             return
 
-        # Добавляем email
-        if self.email_service.add_recipient(email):
-            await update.message.reply_text(f"✅ Email {email} добавлен в список получателей")
+        # Получаем контекст пользователя
+        user_id = update.effective_user.id
+        user_context = self.user_contexts[user_id]
+
+        # Добавляем email для текущей клиники
+        clinic_name = "Династия" if user_context.clinic == ClinicMode.DINASTIYA else "ПСКП"
+        if self.email_service.add_recipient(email, clinic=user_context.clinic.value):
+            await update.message.reply_text(
+                f"✅ Email {email} добавлен в список получателей для клиники \"{clinic_name}\""
+            )
         else:
-            await update.message.reply_text(f"⚠️ Email {email} уже есть в списке")
+            await update.message.reply_text(f"⚠️ Email {email} уже есть в списке для клиники \"{clinic_name}\"")
 
     async def remove_email_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /remove_email - удаление email получателя"""
@@ -302,11 +309,20 @@ class MedicalBot:
 
         email = context.args[0].strip()
 
-        # Удаляем email
-        if self.email_service.remove_recipient(email):
-            await update.message.reply_text(f"✅ Email {email} удалён из списка получателей")
+        # Получаем контекст пользователя
+        user_id = update.effective_user.id
+        user_context = self.user_contexts[user_id]
+
+        # Удаляем email для текущей клиники
+        clinic_name = "Династия" if user_context.clinic == ClinicMode.DINASTIYA else "ПСКП"
+        if self.email_service.remove_recipient(email, clinic=user_context.clinic.value):
+            await update.message.reply_text(
+                f"✅ Email {email} удалён из списка получателей для клиники \"{clinic_name}\""
+            )
         else:
-            await update.message.reply_text(f"⚠️ Email {email} не найден в списке")
+            await update.message.reply_text(
+                f"⚠️ Email {email} не найден в списке для клиники \"{clinic_name}\""
+            )
 
     async def list_emails_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /list_emails - список email получателей"""
@@ -317,18 +333,24 @@ class MedicalBot:
             )
             return
 
-        recipients = self.email_service.get_recipients()
+        # Получаем контекст пользователя
+        user_id = update.effective_user.id
+        user_context = self.user_contexts[user_id]
+
+        # Получаем список для текущей клиники
+        clinic_name = "Династия" if user_context.clinic == ClinicMode.DINASTIYA else "ПСКП"
+        recipients = self.email_service.get_recipients(clinic=user_context.clinic.value)
 
         if not recipients:
             await update.message.reply_text(
-                "📧 Список получателей пуст\n\n"
+                f"📧 Список получателей для клиники \"{clinic_name}\" пуст\n\n"
                 "Добавьте email командой:\n"
                 "/add_email адрес@example.com"
             )
         else:
             emails_list = "\n".join([f"  • {email}" for email in recipients])
             await update.message.reply_text(
-                f"📧 Список получателей ({len(recipients)}):\n\n"
+                f"📧 Список получателей для клиники \"{clinic_name}\" ({len(recipients)}):\n\n"
                 f"{emails_list}\n\n"
                 f"Управление:\n"
                 f"/add_email адрес@example.com - добавить\n"
@@ -657,18 +679,20 @@ class MedicalBot:
             if self.email_service:
                 await message.reply_text("📧 Отправляю документ по email...")
                 examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
+                clinic_name = "Династия" if user_context.clinic == ClinicMode.DINASTIYA else "ПСКП"
 
                 success, error = await self.email_service.send_document(
                     file_path=temp_filepath,
                     patient_name=template.patient_data.full_name,
                     examination_date=examination_date,
+                    clinic=user_context.clinic.value,
                     doctor_name="Гаджимурадлы Д.Д"
                 )
 
                 if success:
-                    recipients = self.email_service.get_recipients()
+                    recipients = self.email_service.get_recipients(clinic=user_context.clinic.value)
                     await message.reply_text(
-                        f"✅ Email отправлен!\n"
+                        f"✅ Email отправлен для клиники \"{clinic_name}\"!\n"
                         f"Получатели: {', '.join(recipients)}"
                     )
                 else:
