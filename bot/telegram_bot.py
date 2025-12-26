@@ -21,18 +21,31 @@ from docx import Document
 from bot.models.types import PatientData, ClinicMode, BotState, BotContext, ExaminationTemplate, CurrentTemplate
 from bot.services.claude_service import ClaudeService
 from bot.services.archive_service import ArchiveService
+from bot.services.email_service import EmailService
 
 
 class MedicalBot:
     """Telegram бот для создания медицинских шаблонов"""
 
-    def __init__(self, telegram_token: str, claude_api_key: str):
+    def __init__(
+        self,
+        telegram_token: str,
+        claude_api_key: str,
+        smtp_host: str = "",
+        smtp_port: int = 587,
+        smtp_user: str = "",
+        smtp_password: str = ""
+    ):
         """
         Инициализация бота
 
         Args:
             telegram_token: Токен Telegram бота
             claude_api_key: API ключ Claude
+            smtp_host: SMTP сервер для email
+            smtp_port: Порт SMTP
+            smtp_user: Email отправителя
+            smtp_password: Пароль от email
         """
         # Создание приложения с увеличенными таймаутами и retry логикой
         self.application = (
@@ -48,6 +61,14 @@ class MedicalBot:
         self.archive_service = ArchiveService()
         self.user_contexts: Dict[int, BotContext] = {}
 
+        # Email сервис (опциональный)
+        if smtp_user and smtp_password:
+            self.email_service = EmailService(smtp_host, smtp_port, smtp_user, smtp_password)
+            print("✓ Email сервис инициализирован")
+        else:
+            self.email_service = None
+            print("⚠️ Email не настроен (добавьте SMTP_USER и SMTP_PASSWORD в .env)")
+
         self._setup_handlers()
 
     def _setup_handlers(self):
@@ -56,6 +77,11 @@ class MedicalBot:
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("stats", self.stats_command))
+
+        # Email команды
+        self.application.add_handler(CommandHandler("add_email", self.add_email_command))
+        self.application.add_handler(CommandHandler("remove_email", self.remove_email_command))
+        self.application.add_handler(CommandHandler("list_emails", self.list_emails_command))
 
         # Callback кнопки
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
@@ -224,6 +250,90 @@ class MedicalBot:
             "/help - помощь",
             reply_markup=reply_markup,
         )
+
+    async def add_email_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команды /add_email - добавление email получателя"""
+        if not self.email_service:
+            await update.message.reply_text(
+                "❌ Email сервис не настроен.\n"
+                "Добавьте SMTP_USER и SMTP_PASSWORD в файл .env"
+            )
+            return
+
+        # Проверяем аргументы команды
+        if not context.args or len(context.args) == 0:
+            await update.message.reply_text(
+                "📧 Использование: /add_email адрес@example.com\n\n"
+                "Пример:\n"
+                "/add_email doctor@clinic.ru"
+            )
+            return
+
+        email = context.args[0].strip()
+
+        # Простая валидация email
+        if '@' not in email or '.' not in email:
+            await update.message.reply_text("❌ Некорректный email адрес")
+            return
+
+        # Добавляем email
+        if self.email_service.add_recipient(email):
+            await update.message.reply_text(f"✅ Email {email} добавлен в список получателей")
+        else:
+            await update.message.reply_text(f"⚠️ Email {email} уже есть в списке")
+
+    async def remove_email_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команды /remove_email - удаление email получателя"""
+        if not self.email_service:
+            await update.message.reply_text(
+                "❌ Email сервис не настроен.\n"
+                "Добавьте SMTP_USER и SMTP_PASSWORD в файл .env"
+            )
+            return
+
+        # Проверяем аргументы команды
+        if not context.args or len(context.args) == 0:
+            await update.message.reply_text(
+                "📧 Использование: /remove_email адрес@example.com\n\n"
+                "Пример:\n"
+                "/remove_email doctor@clinic.ru"
+            )
+            return
+
+        email = context.args[0].strip()
+
+        # Удаляем email
+        if self.email_service.remove_recipient(email):
+            await update.message.reply_text(f"✅ Email {email} удалён из списка получателей")
+        else:
+            await update.message.reply_text(f"⚠️ Email {email} не найден в списке")
+
+    async def list_emails_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команды /list_emails - список email получателей"""
+        if not self.email_service:
+            await update.message.reply_text(
+                "❌ Email сервис не настроен.\n"
+                "Добавьте SMTP_USER и SMTP_PASSWORD в файл .env"
+            )
+            return
+
+        recipients = self.email_service.get_recipients()
+
+        if not recipients:
+            await update.message.reply_text(
+                "📧 Список получателей пуст\n\n"
+                "Добавьте email командой:\n"
+                "/add_email адрес@example.com"
+            )
+        else:
+            emails_list = "\n".join([f"  • {email}" for email in recipients])
+            await update.message.reply_text(
+                f"📧 Список получателей ({len(recipients)}):\n\n"
+                f"{emails_list}\n\n"
+                f"Управление:\n"
+                f"/add_email адрес@example.com - добавить\n"
+                f"/remove_email адрес@example.com - удалить"
+            )
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка нажатий на inline кнопки"""
@@ -542,6 +652,27 @@ class MedicalBot:
                     filename=filename,
                     caption="📄 ГОТОВЫЙ ОСМОТР - документ сохранён и готов к использованию!",
                 )
+
+            # Отправка email (если настроен)
+            if self.email_service:
+                await message.reply_text("📧 Отправляю документ по email...")
+                examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
+
+                success, error = await self.email_service.send_document(
+                    file_path=temp_filepath,
+                    patient_name=template.patient_data.full_name,
+                    examination_date=examination_date,
+                    doctor_name="Гаджимурадлы Д.Д"
+                )
+
+                if success:
+                    recipients = self.email_service.get_recipients()
+                    await message.reply_text(
+                        f"✅ Email отправлен!\n"
+                        f"Получатели: {', '.join(recipients)}"
+                    )
+                else:
+                    await message.reply_text(f"⚠️ Ошибка отправки email:\n{error}")
 
             # Сообщение о готовности к следующему пациенту
             await message.reply_text("✅ Можете отправить данные следующего пациента.")

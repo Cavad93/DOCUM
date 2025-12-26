@@ -34,6 +34,12 @@ def main():
         print("Создайте файл .env и добавьте ANTHROPIC_API_KEY=your_key")
         sys.exit(1)
 
+    # Email настройки (опциональные)
+    smtp_host = os.getenv("SMTP_HOST", "smtp.yandex.ru")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER", "")
+    smtp_password = os.getenv("SMTP_PASSWORD", "")
+
     # Баннер
     print("""
 ╔═══════════════════════════════════════════════════════════╗
@@ -60,7 +66,14 @@ def main():
     # Создание и запуск бота
     try:
         print("🔧 Инициализация бота...")
-        bot = MedicalBot(telegram_token, claude_api_key)
+        bot = MedicalBot(
+            telegram_token=telegram_token,
+            claude_api_key=claude_api_key,
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_user=smtp_user,
+            smtp_password=smtp_password
+        )
         print("✅ Бот успешно инициализирован")
         print("🚀 Бот работает! Нажмите Ctrl+C для остановки\n")
         bot.run()
