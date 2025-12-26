@@ -51,21 +51,23 @@ class CorrectionsMemoryService:
         try:
             corrections = self._load_corrections()
 
+            # Сокращаем текст правки до 500 символов для экономии токенов
+            correction_text_short = correction_text[:500] if len(correction_text) > 500 else correction_text
+
             correction_entry = {
                 "timestamp": datetime.now().isoformat(),
                 "diagnosis": diagnosis.lower().strip(),
                 "patient_age": patient_age,
-                "correction_text": correction_text,
-                "original_template": original_template,
-                "corrected_template": corrected_template,
+                "correction_text": correction_text_short,
+                # НЕ храним полные шаблоны - они слишком большие и расходуют токены!
+                # Храним только краткую информацию о правках
                 "clinic": clinic,
             }
 
             corrections.append(correction_entry)
 
-            # Сохраняем только последние 200 исправлений
-            if len(corrections) > 200:
-                corrections = corrections[-200:]
+            # Очищаем старые и дублирующиеся исправления
+            corrections = self._cleanup_old_corrections(corrections, max_count=100)
 
             self.corrections_file.write_text(
                 json.dumps(corrections, ensure_ascii=False, indent=2),
@@ -189,6 +191,43 @@ class CorrectionsMemoryService:
             score = diagnosis_similarity
 
         return score
+
+    def _cleanup_old_corrections(self, corrections: List[Dict], max_count: int = 100) -> List[Dict]:
+        """
+        Умная очистка исправлений для экономии токенов
+
+        Args:
+            corrections: Список всех исправлений
+            max_count: Максимальное количество для хранения
+
+        Returns:
+            Очищенный список исправлений
+        """
+        if len(corrections) <= max_count:
+            return corrections
+
+        # Группируем по диагнозу и клинике
+        grouped = {}
+        for corr in corrections:
+            key = (corr.get("diagnosis", "unknown"), corr.get("clinic", "dinastiya"))
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(corr)
+
+        # Для каждой группы оставляем только последние 3 исправления
+        # (остальные устаревшие правки удаляем)
+        cleaned = []
+        for key, group in grouped.items():
+            # Сортируем по времени и берем последние 3
+            sorted_group = sorted(group, key=lambda x: x.get("timestamp", ""), reverse=True)
+            cleaned.extend(sorted_group[:3])
+
+        # Если все еще больше max_count, берем самые свежие
+        if len(cleaned) > max_count:
+            cleaned = sorted(cleaned, key=lambda x: x.get("timestamp", ""), reverse=True)
+            cleaned = cleaned[:max_count]
+
+        return cleaned
 
     def _load_corrections(self) -> List[Dict]:
         """Загрузить все исправления из файла"""

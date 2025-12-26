@@ -396,27 +396,32 @@ class ClaudeService:
             except Exception:
                 pass
 
-            # Получаем похожие исправления из истории
+            # Получаем похожие исправления из истории (только топ-2 для экономии токенов)
             similar_corrections = self.corrections_memory.get_similar_corrections(
                 diagnosis=patient_data.diagnosis,
                 patient_age=patient_age,
                 clinic=clinic.value,
-                limit=3
+                limit=2  # Максимум 2 исправления для экономии токенов
             )
 
             # Формируем контекст из истории исправлений
             corrections_context = ""
             if similar_corrections:
                 corrections_context = "\n\nАВТОМАТИЧЕСКИЕ УЛУЧШЕНИЯ НА ОСНОВЕ ВАШИХ ПРЕДПОЧТЕНИЙ:\n"
-                corrections_context += "Анализ вашей истории исправлений показывает, что для похожих случаев вы обычно вносите следующие правки:\n\n"
+                corrections_context += "Анализ вашей истории исправлений:\n"
 
                 for i, item in enumerate(similar_corrections, 1):
                     corr = item["correction"]
                     score = item["relevance_score"]
-                    corrections_context += f"{i}. Диагноз: {corr['diagnosis']} (релевантность: {score:.0%})\n"
-                    corrections_context += f"   Ваша правка: {corr['correction_text'][:200]}...\n\n"
+                    # Берем только первые 150 символов для экономии
+                    correction_preview = corr['correction_text'][:150]
+                    if len(corr['correction_text']) > 150:
+                        correction_preview += "..."
 
-                corrections_context += "ВАЖНО: Автоматически примените эти улучшения к текущему шаблону, если они релевантны!\n"
+                    corrections_context += f"{i}. Диагноз: {corr['diagnosis']} ({score:.0%})\n"
+                    corrections_context += f"   Правка: {correction_preview}\n"
+
+                corrections_context += "\nПримените эти улучшения, если релевантны!\n"
                 print(f"✓ Найдено {len(similar_corrections)} похожих исправлений для автоматического применения")
 
             prompt = f"""Вы медицинский ассистент. Ваша задача - заполнить готовый шаблон медицинского осмотра.
