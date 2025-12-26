@@ -74,7 +74,8 @@ class ClaudeService:
             Текстовое содержимое документа
         """
         try:
-            doc = Document(path)
+            # Конвертируем Path в строку для совместимости с Windows
+            doc = Document(str(path))
             # Извлекаем весь текст из параграфов
             full_text = []
             for paragraph in doc.paragraphs:
