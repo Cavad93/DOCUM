@@ -356,13 +356,23 @@ class ClaudeService:
                 illness_date = illness_dt.strftime("%d.%m.%Y")
 
             # Рассчитываем период ЭЛН (если не отказ)
+            print(f"🔍 DEBUG: eln_refused={patient_data.eln_refused}, sick_leave_days={patient_data.sick_leave_days}")
+
             if patient_data.eln_refused:
                 # Отказ от ЭЛН
+                print(f"✓ Пациент отказался от ЭЛН")
                 eln_line = "- ЭЛН: ОТКАЗ (пациент отказался от электронного листа нетрудоспособности)\n"
                 follow_up_line = "- Дата явки к врачу: по необходимости\n"
             else:
                 # Обычный расчёт ЭЛН
                 sick_days = patient_data.sick_leave_days or 3  # По умолчанию 3 дня
+                print(f"🔍 DEBUG: sick_days after 'or 3' = {sick_days}, type={type(sick_days)}")
+
+                # Валидация sick_days
+                if not isinstance(sick_days, int) or sick_days <= 0 or sick_days > 365:
+                    print(f"⚠️ ВНИМАНИЕ: Некорректное значение sick_days={sick_days}, использую 3 дня")
+                    sick_days = 3
+
                 exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
                 eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
                 eln_end_date = eln_end_dt.strftime("%d.%m.%Y")

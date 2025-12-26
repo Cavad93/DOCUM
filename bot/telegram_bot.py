@@ -587,17 +587,21 @@ class MedicalBot:
             elif re.match(r"^элн\s*:", line, re.IGNORECASE):
                 # Парсим "ЭЛН: 5 дней" или "ЭЛН: 5" или "ЭЛН: отказ"
                 eln_text = re.sub(r"^элн\s*:\s*", "", line, flags=re.IGNORECASE).strip().lower()
+                print(f"🔍 Парсинг ЭЛН: '{line}' -> '{eln_text}'")
 
                 # Проверяем на отказ
                 if "отказ" in eln_text or "нет" in eln_text:
                     data["eln_refused"] = True
                     data["sick_leave_days"] = None
+                    print(f"✓ ЭЛН отказ распознан")
                 else:
-                    # Извлекаем число
-                    match = re.search(r"(\d+)", eln_text)
+                    # Извлекаем число (только первые 3 цифры для безопасности)
+                    match = re.search(r"(\d{1,3})", eln_text)
                     if match:
-                        data["sick_leave_days"] = int(match.group(1))
+                        days_value = int(match.group(1))
+                        data["sick_leave_days"] = days_value
                         data["eln_refused"] = False
+                        print(f"✓ ЭЛН дней: {days_value}")
 
         return data
 
