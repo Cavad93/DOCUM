@@ -84,6 +84,11 @@ class MedicalBot:
         self.application.add_handler(CommandHandler("remove_email", self.remove_email_command))
         self.application.add_handler(CommandHandler("list_emails", self.list_emails_command))
 
+        # ЭЛН Email команды
+        self.application.add_handler(CommandHandler("add_eln_email", self.add_eln_email_command))
+        self.application.add_handler(CommandHandler("remove_eln_email", self.remove_eln_email_command))
+        self.application.add_handler(CommandHandler("list_eln_emails", self.list_eln_emails_command))
+
         # Callback кнопки
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
 
@@ -208,6 +213,9 @@ class MedicalBot:
             "Диагноз: Острый бронхит\n\n"
             "Необязательные поля:\n"
             "СНИЛС: 123-456-789 00\n"
+            "Место работы: АО Т-БАНК\n"
+            "Должность: эксперт\n"
+            "ЭЛН: 27.12.2025 по 31.12.2025 (точные даты)\n"
             "ЭЛН: 5 дней (или просто: ЭЛН: 5)\n"
             "Дата осмотра: 25.12.2025\n"
             "Начало болезни: 24.12.2025\n\n"
@@ -215,10 +223,14 @@ class MedicalBot:
             "• Обновит все даты в шаблоне на актуальные\n"
             "• Рассчитает период ЭЛН и дату явки к врачу\n"
             "• Сохранит оформление и структуру шаблона\n\n"
-            "Email команды:\n"
-            "/add_email адрес@example.com - добавить получателя для текущей клиники\n"
+            "Email команды (все осмотры):\n"
+            "/add_email адрес@example.com - добавить получателя\n"
             "/remove_email адрес@example.com - удалить получателя\n"
-            "/list_emails - показать список получателей текущей клиники"
+            "/list_emails - показать список получателей\n\n"
+            "Email команды (только осмотры с ЭЛН):\n"
+            "/add_eln_email адрес@example.com - добавить ЭЛН-получателя\n"
+            "/remove_eln_email адрес@example.com - удалить ЭЛН-получателя\n"
+            "/list_eln_emails - показать список ЭЛН-получателей"
         )
 
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -366,6 +378,116 @@ class MedicalBot:
                 f"Управление:\n"
                 f"/add_email адрес@example.com - добавить\n"
                 f"/remove_email адрес@example.com - удалить"
+            )
+
+    async def add_eln_email_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команды /add_eln_email - добавление email получателя для осмотров с ЭЛН"""
+        if not self.email_service:
+            await update.message.reply_text(
+                "❌ Email сервис не настроен.\n"
+                "Добавьте SMTP_USER и SMTP_PASSWORD в файл .env"
+            )
+            return
+
+        # Проверяем аргументы команды
+        if not context.args or len(context.args) == 0:
+            await update.message.reply_text(
+                "📧 Использование: /add_eln_email адрес@example.com\n\n"
+                "Этот email будет получать ТОЛЬКО осмотры с ЭЛН (исключая отказы от ЭЛН)\n\n"
+                "Пример:\n"
+                "/add_eln_email accounting@clinic.ru"
+            )
+            return
+
+        email = context.args[0].strip()
+
+        # Простая валидация email
+        if '@' not in email or '.' not in email:
+            await update.message.reply_text("❌ Некорректный email адрес")
+            return
+
+        # Получаем контекст пользователя
+        user_id = update.effective_user.id
+        user_context = self.user_contexts[user_id]
+
+        # Добавляем email для текущей клиники (тип: только ЭЛН)
+        clinic_name = "Династия" if user_context.clinic == ClinicMode.DINASTIYA else "ПСКП"
+        if self.email_service.add_recipient(email, clinic=user_context.clinic.value, recipient_type="eln_only"):
+            await update.message.reply_text(
+                f"✅ Email {email} добавлен в список получателей осмотров с ЭЛН для клиники \"{clinic_name}\"\n\n"
+                f"⚠️ На этот адрес будут отправляться ТОЛЬКО осмотры с ЭЛН (исключая отказы)"
+            )
+        else:
+            await update.message.reply_text(f"⚠️ Email {email} уже есть в списке ЭЛН-получателей для клиники \"{clinic_name}\"")
+
+    async def remove_eln_email_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команды /remove_eln_email - удаление email получателя для осмотров с ЭЛН"""
+        if not self.email_service:
+            await update.message.reply_text(
+                "❌ Email сервис не настроен.\n"
+                "Добавьте SMTP_USER и SMTP_PASSWORD в файл .env"
+            )
+            return
+
+        # Проверяем аргументы команды
+        if not context.args or len(context.args) == 0:
+            await update.message.reply_text(
+                "📧 Использование: /remove_eln_email адрес@example.com\n\n"
+                "Пример:\n"
+                "/remove_eln_email accounting@clinic.ru"
+            )
+            return
+
+        email = context.args[0].strip()
+
+        # Получаем контекст пользователя
+        user_id = update.effective_user.id
+        user_context = self.user_contexts[user_id]
+
+        # Удаляем email для текущей клиники (тип: только ЭЛН)
+        clinic_name = "Династия" if user_context.clinic == ClinicMode.DINASTIYA else "ПСКП"
+        if self.email_service.remove_recipient(email, clinic=user_context.clinic.value, recipient_type="eln_only"):
+            await update.message.reply_text(
+                f"✅ Email {email} удалён из списка ЭЛН-получателей для клиники \"{clinic_name}\""
+            )
+        else:
+            await update.message.reply_text(
+                f"⚠️ Email {email} не найден в списке ЭЛН-получателей для клиники \"{clinic_name}\""
+            )
+
+    async def list_eln_emails_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команды /list_eln_emails - список email получателей для осмотров с ЭЛН"""
+        if not self.email_service:
+            await update.message.reply_text(
+                "❌ Email сервис не настроен.\n"
+                "Добавьте SMTP_USER и SMTP_PASSWORD в файл .env"
+            )
+            return
+
+        # Получаем контекст пользователя
+        user_id = update.effective_user.id
+        user_context = self.user_contexts[user_id]
+
+        # Получаем список для текущей клиники (тип: только ЭЛН)
+        clinic_name = "Династия" if user_context.clinic == ClinicMode.DINASTIYA else "ПСКП"
+        recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="eln_only")
+
+        if not recipients:
+            await update.message.reply_text(
+                f"📧 Список ЭЛН-получателей для клиники \"{clinic_name}\" пуст\n\n"
+                "ЭЛН-получатели - это email адреса, которые получают ТОЛЬКО осмотры с ЭЛН (исключая отказы)\n\n"
+                "Добавьте email командой:\n"
+                "/add_eln_email адрес@example.com"
+            )
+        else:
+            emails_list = "\n".join([f"  • {email}" for email in recipients])
+            await update.message.reply_text(
+                f"📧 Список ЭЛН-получателей для клиники \"{clinic_name}\" ({len(recipients)}):\n\n"
+                f"{emails_list}\n\n"
+                f"⚠️ Эти адреса получают ТОЛЬКО осмотры с ЭЛН (исключая отказы)\n\n"
+                f"Управление:\n"
+                f"/add_eln_email адрес@example.com - добавить\n"
+                f"/remove_eln_email адрес@example.com - удалить"
             )
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -781,19 +903,28 @@ class MedicalBot:
                     examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
                     clinic_name = "ПСКП"
 
+                    # Проверяем, есть ли ЭЛН (False если отказ)
+                    has_eln = not template.patient_data.eln_refused
+
                     success, error = await self.email_service.send_document(
                         file_path=temp_filepath,
                         patient_name=template.patient_data.full_name,
                         examination_date=examination_date,
                         clinic=user_context.clinic.value,
-                        doctor_name="Гаджимурадлы Д.Д"
+                        doctor_name="Гаджимурадлы Д.Д",
+                        has_eln=has_eln
                     )
 
                     if success:
-                        recipients = self.email_service.get_recipients(clinic=user_context.clinic.value)
+                        # Получаем список всех получателей
+                        all_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="all")
+                        eln_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="eln_only") if has_eln else []
+                        total_recipients = list(set(all_recipients + eln_recipients))
+
+                        eln_status = "с ЭЛН" if has_eln else "БЕЗ ЭЛН (отказ)"
                         await message.reply_text(
-                            f"✅ Email отправлен для клиники \"{clinic_name}\"!\n"
-                            f"Получатели: {', '.join(recipients)}"
+                            f"✅ Email отправлен для клиники \"{clinic_name}\" ({eln_status})!\n"
+                            f"Получатели: {', '.join(total_recipients)}"
                         )
                     else:
                         await message.reply_text(f"⚠️ Ошибка отправки email:\n{error}")
@@ -919,19 +1050,28 @@ class MedicalBot:
             template = user_context.current_template
             examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
 
+            # Проверяем, есть ли ЭЛН (False если отказ)
+            has_eln = not template.patient_data.eln_refused
+
             success, error = await self.email_service.send_document(
                 file_path=user_context.saved_document_path,
                 patient_name=template.patient_data.full_name,
                 examination_date=examination_date,
                 clinic=user_context.clinic.value,
-                doctor_name="Гаджимурадлы Д.Д"
+                doctor_name="Гаджимурадлы Д.Д",
+                has_eln=has_eln
             )
 
             if success:
-                recipients = self.email_service.get_recipients(clinic=user_context.clinic.value)
+                # Получаем список всех получателей
+                all_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="all")
+                eln_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="eln_only") if has_eln else []
+                total_recipients = list(set(all_recipients + eln_recipients))
+
+                eln_status = "с ЭЛН" if has_eln else "БЕЗ ЭЛН (отказ)"
                 await message.reply_text(
-                    f"✅ Email отправлен для клиники \"Династия\"!\n"
-                    f"Получатели: {', '.join(recipients)}"
+                    f"✅ Email отправлен для клиники \"Династия\" ({eln_status})!\n"
+                    f"Получатели: {', '.join(total_recipients)}"
                 )
             else:
                 await message.reply_text(f"⚠️ Ошибка отправки email:\n{error}")
@@ -965,20 +1105,29 @@ class MedicalBot:
             template = user_context.current_template
             examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
 
+            # Проверяем, есть ли ЭЛН (False если отказ)
+            has_eln = not template.patient_data.eln_refused
+
             success, error = await self.email_service.send_document(
                 file_path=user_context.saved_document_path,
                 patient_name=template.patient_data.full_name,
                 examination_date=examination_date,
                 clinic=user_context.clinic.value,
                 doctor_name="Гаджимурадлы Д.Д",
-                photos=user_context.examination_photos
+                photos=user_context.examination_photos,
+                has_eln=has_eln
             )
 
             if success:
-                recipients = self.email_service.get_recipients(clinic=user_context.clinic.value)
+                # Получаем список всех получателей
+                all_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="all")
+                eln_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="eln_only") if has_eln else []
+                total_recipients = list(set(all_recipients + eln_recipients))
+
+                eln_status = "с ЭЛН" if has_eln else "БЕЗ ЭЛН (отказ)"
                 await message.reply_text(
-                    f"✅ Email отправлен для клиники \"Династия\"!\n"
-                    f"Получатели: {', '.join(recipients)}\n"
+                    f"✅ Email отправлен для клиники \"Династия\" ({eln_status})!\n"
+                    f"Получатели: {', '.join(total_recipients)}\n"
                     f"Прикреплено: документ + {len(user_context.examination_photos)} фото"
                 )
             else:
