@@ -78,6 +78,7 @@ class MedicalBot:
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         self.application.add_handler(CommandHandler("stats", self.stats_command))
+        self.application.add_handler(CommandHandler("cancel", self.cancel_command))
 
         # Email команды
         self.application.add_handler(CommandHandler("add_email", self.add_email_command))
@@ -198,6 +199,7 @@ class MedicalBot:
             "  Дата осмотра: 25.12.2025 (необязательно)\n"
             "  Начало болезни: 24.12.2025 (необязательно)\n\n"
             "Основные команды:\n"
+            "/cancel - отменить текущий процесс\n"
             "/stats - вернуться в главное меню\n"
             "/help - полная помощь по всем командам\n\n"
             "Email (все осмотры):\n"
@@ -241,6 +243,10 @@ class MedicalBot:
             "• Обновит все даты в шаблоне на актуальные\n"
             "• Рассчитает период ЭЛН и дату явки к врачу\n"
             "• Сохранит оформление и структуру шаблона\n\n"
+            "Основные команды:\n"
+            "/cancel - отменить текущий процесс и вернуться к началу\n"
+            "/stats - вернуться в главное меню\n"
+            "/help - показать эту справку\n\n"
             "Email команды (все осмотры):\n"
             "/add_email адрес@example.com - добавить получателя\n"
             "/remove_email адрес@example.com - удалить получателя\n"
@@ -292,6 +298,7 @@ class MedicalBot:
             "  Дата осмотра: 25.12.2025 (необязательно)\n"
             "  Начало болезни: 24.12.2025 (необязательно)\n\n"
             "Основные команды:\n"
+            "/cancel - отменить текущий процесс\n"
             "/stats - вернуться в главное меню\n"
             "/help - полная помощь по всем командам\n\n"
             "Email (все осмотры):\n"
@@ -307,6 +314,47 @@ class MedicalBot:
             "/send_batch 27.12.2025 - за конкретную дату\n"
             "/queue_status - статус очереди\n"
             "/clear_queue - очистить очередь",
+            reply_markup=reply_markup,
+        )
+
+    async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команды /cancel - отмена текущего процесса и возврат к началу"""
+        user_id = update.effective_user.id
+
+        # Получаем текущий контекст для проверки состояния
+        current_context = self.user_contexts.get(user_id)
+
+        # Сбрасываем контекст пользователя
+        self.user_contexts[user_id] = BotContext(
+            clinic=ClinicMode.DINASTIYA,
+            state=BotState.IDLE,
+        )
+
+        # Создаем кнопки выбора клиники
+        keyboard = [
+            [
+                InlineKeyboardButton("🏥 Династия", callback_data="clinic_dinastiya"),
+                InlineKeyboardButton("🏥 ПСКП", callback_data="clinic_pskp"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # Сообщение об отмене
+        cancel_message = "❌ Текущий процесс отменен.\n\n"
+
+        # Если были какие-то данные в процессе, уведомляем об их очистке
+        if current_context and (
+            current_context.patient_data or
+            current_context.current_template or
+            current_context.examination_photos
+        ):
+            cancel_message += "Все несохраненные данные очищены.\n\n"
+
+        await update.message.reply_text(
+            cancel_message +
+            "Выберите клинику для начала работы:\n\n"
+            "🏥 Династия\n"
+            "🏥 ПСКП",
             reply_markup=reply_markup,
         )
 
