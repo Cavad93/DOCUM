@@ -19,7 +19,7 @@ from telegram.ext import (
 )
 from docx import Document
 
-from bot.models.types import PatientData, ClinicMode, BotState, BotContext, ExaminationTemplate, CurrentTemplate
+from bot.models.types import PatientData, ClinicMode, BotState, BotContext, ExaminationTemplate, CurrentTemplate, QueuedDocument
 from bot.services.claude_service import ClaudeService
 from bot.services.archive_service import ArchiveService
 from bot.services.email_service import EmailService
@@ -88,6 +88,11 @@ class MedicalBot:
         self.application.add_handler(CommandHandler("add_eln_email", self.add_eln_email_command))
         self.application.add_handler(CommandHandler("remove_eln_email", self.remove_eln_email_command))
         self.application.add_handler(CommandHandler("list_eln_emails", self.list_eln_emails_command))
+
+        # Пакетная отправка для ПСКП
+        self.application.add_handler(CommandHandler("send_batch", self.send_batch_command))
+        self.application.add_handler(CommandHandler("queue_status", self.queue_status_command))
+        self.application.add_handler(CommandHandler("clear_queue", self.clear_queue_command))
 
         # Callback кнопки
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
@@ -230,7 +235,11 @@ class MedicalBot:
             "Email команды (только осмотры с ЭЛН):\n"
             "/add_eln_email адрес@example.com - добавить ЭЛН-получателя\n"
             "/remove_eln_email адрес@example.com - удалить ЭЛН-получателя\n"
-            "/list_eln_emails - показать список ЭЛН-получателей"
+            "/list_eln_emails - показать список ЭЛН-получателей\n\n"
+            "Пакетная отправка (только для ПСКП):\n"
+            "/queue_status - статус очереди документов\n"
+            "/send_batch - отправить все документы одним письмом\n"
+            "/clear_queue - очистить очередь документов"
         )
 
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -489,6 +498,154 @@ class MedicalBot:
                 f"/add_eln_email адрес@example.com - добавить\n"
                 f"/remove_eln_email адрес@example.com - удалить"
             )
+
+    async def send_batch_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команды /send_batch - пакетная отправка накопленных документов (только для ПСКП)"""
+        if not self.email_service:
+            await update.message.reply_text(
+                "❌ Email сервис не настроен.\n"
+                "Добавьте SMTP_USER и SMTP_PASSWORD в файл .env"
+            )
+            return
+
+        user_id = update.effective_user.id
+        user_context = self._get_or_create_context(user_id)
+
+        # Проверяем, что это клиника ПСКП
+        if user_context.clinic != ClinicMode.PSKP:
+            await update.message.reply_text(
+                "⚠️ Пакетная отправка доступна только для клиники ПСКП\n\n"
+                "Для клиники Династия документы отправляются сразу после подтверждения."
+            )
+            return
+
+        # Проверяем наличие документов в очереди
+        if not user_context.document_queue or len(user_context.document_queue) == 0:
+            await update.message.reply_text(
+                "📭 Очередь документов пуста\n\n"
+                "Создайте несколько осмотров, они будут автоматически добавлены в очередь."
+            )
+            return
+
+        try:
+            await update.message.reply_text(
+                f"📧 Отправляю {len(user_context.document_queue)} документ(ов) одним письмом..."
+            )
+
+            # Подготавливаем список документов для отправки
+            documents = []
+            has_any_eln = False
+            for doc in user_context.document_queue:
+                documents.append({
+                    "file_path": doc.file_path,
+                    "patient_name": doc.patient_name,
+                    "examination_date": doc.examination_date
+                })
+                if doc.has_eln:
+                    has_any_eln = True
+
+            # Отправляем все документы одним письмом
+            success, error = await self.email_service.send_batch_documents(
+                documents=documents,
+                clinic=user_context.clinic.value,
+                doctor_name="Гаджимурадлы Д.Д",
+                has_eln=has_any_eln
+            )
+
+            if success:
+                # Получаем список всех получателей
+                all_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="all")
+                eln_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="eln_only") if has_any_eln else []
+                total_recipients = list(set(all_recipients + eln_recipients))
+
+                await update.message.reply_text(
+                    f"✅ Пакет из {len(documents)} документ(ов) отправлен!\n\n"
+                    f"Получатели: {', '.join(total_recipients)}"
+                )
+
+                # Очищаем очередь после успешной отправки
+                user_context.document_queue = []
+            else:
+                await update.message.reply_text(f"⚠️ Ошибка отправки email:\n{error}")
+
+        except Exception as e:
+            print(f"Ошибка пакетной отправки: {e}")
+            await update.message.reply_text(f"❌ Ошибка при отправке: {str(e)}")
+
+    async def queue_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команды /queue_status - показать статус очереди документов"""
+        user_id = update.effective_user.id
+        user_context = self._get_or_create_context(user_id)
+
+        # Проверяем, что это клиника ПСКП
+        if user_context.clinic != ClinicMode.PSKP:
+            await update.message.reply_text(
+                "⚠️ Пакетная отправка доступна только для клиники ПСКП"
+            )
+            return
+
+        if not user_context.document_queue or len(user_context.document_queue) == 0:
+            await update.message.reply_text(
+                "📭 Очередь документов пуста\n\n"
+                "Создайте несколько осмотров, они будут автоматически добавлены в очередь."
+            )
+            return
+
+        # Формируем список документов
+        documents_list = []
+        eln_count = 0
+        for i, doc in enumerate(user_context.document_queue, 1):
+            eln_badge = "✅ ЭЛН" if doc.has_eln else "❌ без ЭЛН"
+            if doc.has_eln:
+                eln_count += 1
+            documents_list.append(
+                f"{i}. {doc.patient_name} ({doc.examination_date}) - {eln_badge}"
+            )
+
+        docs_text = "\n".join(documents_list)
+        await update.message.reply_text(
+            f"📋 В очереди: {len(user_context.document_queue)} документ(ов)\n"
+            f"С ЭЛН: {eln_count}, Без ЭЛН: {len(user_context.document_queue) - eln_count}\n\n"
+            f"{docs_text}\n\n"
+            f"Управление:\n"
+            f"/send_batch - отправить все одним письмом\n"
+            f"/clear_queue - очистить очередь"
+        )
+
+    async def clear_queue_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команды /clear_queue - очистить очередь документов"""
+        user_id = update.effective_user.id
+        user_context = self._get_or_create_context(user_id)
+
+        # Проверяем, что это клиника ПСКП
+        if user_context.clinic != ClinicMode.PSKP:
+            await update.message.reply_text(
+                "⚠️ Пакетная отправка доступна только для клиники ПСКП"
+            )
+            return
+
+        if not user_context.document_queue or len(user_context.document_queue) == 0:
+            await update.message.reply_text("📭 Очередь уже пуста")
+            return
+
+        # Удаляем временные файлы
+        deleted_count = 0
+        for doc in user_context.document_queue:
+            try:
+                if Path(doc.file_path).exists():
+                    Path(doc.file_path).unlink()
+                    deleted_count += 1
+            except Exception as e:
+                print(f"Ошибка удаления файла {doc.file_path}: {e}")
+
+        queue_size = len(user_context.document_queue)
+        user_context.document_queue = []
+
+        await update.message.reply_text(
+            f"🗑️ Очередь очищена\n"
+            f"Удалено документов: {queue_size}\n"
+            f"Удалено файлов: {deleted_count}"
+        )
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка нажатий на inline кнопки"""
@@ -898,36 +1055,33 @@ class MedicalBot:
                     # НЕ удаляем temp_filepath - он нужен для отправки email
                     return
                 else:
-                    # Для ПСКП отправляем сразу без фото
-                    await message.reply_text("📧 Отправляю документ по email...")
+                    # Для ПСКП добавляем документ в очередь для пакетной отправки
                     examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
-                    clinic_name = "ПСКП"
-
-                    # Проверяем, есть ли ЭЛН (False если отказ)
                     has_eln = not template.patient_data.eln_refused
 
-                    success, error = await self.email_service.send_document(
+                    # Инициализируем очередь если её нет
+                    if user_context.document_queue is None:
+                        user_context.document_queue = []
+
+                    # Добавляем документ в очередь
+                    queued_doc = QueuedDocument(
                         file_path=temp_filepath,
                         patient_name=template.patient_data.full_name,
                         examination_date=examination_date,
-                        clinic=user_context.clinic.value,
-                        doctor_name="Гаджимурадлы Д.Д",
                         has_eln=has_eln
                     )
+                    user_context.document_queue.append(queued_doc)
 
-                    if success:
-                        # Получаем список всех получателей
-                        all_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="all")
-                        eln_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="eln_only") if has_eln else []
-                        total_recipients = list(set(all_recipients + eln_recipients))
-
-                        eln_status = "с ЭЛН" if has_eln else "БЕЗ ЭЛН (отказ)"
-                        await message.reply_text(
-                            f"✅ Email отправлен для клиники \"{clinic_name}\" ({eln_status})!\n"
-                            f"Получатели: {', '.join(total_recipients)}"
-                        )
-                    else:
-                        await message.reply_text(f"⚠️ Ошибка отправки email:\n{error}")
+                    eln_status = "с ЭЛН" if has_eln else "БЕЗ ЭЛН (отказ)"
+                    queue_size = len(user_context.document_queue)
+                    await message.reply_text(
+                        f"✅ Документ добавлен в очередь ({eln_status})\n\n"
+                        f"📋 В очереди: {queue_size} документ(ов)\n\n"
+                        f"Управление очередью:\n"
+                        f"/queue_status - статус очереди\n"
+                        f"/send_batch - отправить все документы одним письмом\n"
+                        f"/clear_queue - очистить очередь"
+                    )
 
             # Сообщение о готовности к следующему пациенту
             await message.reply_text("✅ Можете отправить данные следующего пациента.")

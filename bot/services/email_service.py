@@ -305,6 +305,112 @@ class EmailService:
             print(error_msg)
             return False, error_msg
 
+    async def send_batch_documents(
+        self,
+        documents: List[dict],
+        clinic: str = "dinastiya",
+        doctor_name: str = "Гаджимурадлы Д.Д",
+        has_eln: bool = True
+    ) -> tuple[bool, str]:
+        """
+        Отправить несколько документов одним письмом (пакетная отправка для ПСКП)
+
+        Args:
+            documents: Список документов, каждый содержит:
+                - file_path: путь к .docx файлу
+                - patient_name: ФИО пациента
+                - examination_date: дата осмотра
+            clinic: Название клиники ("dinastiya" или "pskp")
+            doctor_name: ФИО врача (уже сокращённое)
+            has_eln: Есть ли хотя бы один документ с ЭЛН
+
+        Returns:
+            Tuple (успех, сообщение об ошибке или None)
+        """
+        # Получаем обычных получателей (получают все осмотры)
+        all_recipients = self.get_recipients(clinic, recipient_type="all")
+
+        # Получаем ЭЛН-получателей (получают только осмотры с ЭЛН)
+        eln_recipients = []
+        if has_eln:
+            eln_recipients = self.get_recipients(clinic, recipient_type="eln_only")
+
+        # Объединяем списки и удаляем дубликаты
+        recipients = list(set(all_recipients + eln_recipients))
+
+        if not recipients:
+            return False, "Нет настроенных получателей. Используйте /add_email"
+
+        if not documents:
+            return False, "Нет документов для отправки"
+
+        # Проверяем существование всех файлов
+        for doc in documents:
+            if not Path(doc["file_path"]).exists():
+                return False, f"Файл не найден: {doc['file_path']}"
+
+        try:
+            # Формируем тему письма
+            today = datetime.now().strftime("%d.%m.%Y")
+            subject = f"Пакет осмотров {today} {doctor_name} ({len(documents)} шт.)"
+
+            # Создаём письмо
+            msg = MIMEMultipart()
+            msg['From'] = self.smtp_user
+            msg['To'] = ', '.join(recipients)
+            msg['Subject'] = subject
+
+            # Формируем список пациентов для тела письма
+            patients_list = []
+            for i, doc in enumerate(documents, 1):
+                short_name = self._shorten_name(doc["patient_name"])
+                patients_list.append(f"{i}. {short_name} ({doc['examination_date']})")
+
+            # Текст письма
+            body = f"""Пакет медицинских осмотров
+
+Врач: {doctor_name}
+Дата отправки: {today}
+Количество осмотров: {len(documents)}
+
+Список пациентов:
+{chr(10).join(patients_list)}
+
+Документы во вложении.
+"""
+            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
+            # Прикрепляем все документы
+            for i, doc in enumerate(documents, 1):
+                file_path = doc["file_path"]
+                patient_name = doc["patient_name"]
+                examination_date = doc["examination_date"]
+
+                # Формируем имя файла для вложения
+                safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in patient_name)
+                filename = f"{i}_{safe_name}_ГОТОВЫЙ_ОСМОТР_{examination_date.replace('.', '-')}.docx"
+
+                # Прикрепляем файл
+                with open(file_path, 'rb') as f:
+                    attachment = MIMEApplication(f.read(), _subtype="docx")
+                    attachment.add_header('Content-Disposition', 'attachment', filename=filename)
+                    msg.attach(attachment)
+
+            # Отправляем через Yandex SMTP
+            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                server.starttls()
+                server.login(self.smtp_user, self.smtp_password)
+                server.send_message(msg)
+
+            print(f"✓ Пакет из {len(documents)} документов отправлен: {subject}")
+            print(f"  Получатели: {', '.join(recipients)}")
+            return True, None
+
+        except Exception as e:
+            error_msg = f"Ошибка отправки пакета: {e}"
+            print(error_msg)
+            return False, error_msg
+
     def _shorten_name(self, full_name: str) -> str:
         """
         Сокращает ФИО (Иванов Иван Иванович -> Иванов И.И.)

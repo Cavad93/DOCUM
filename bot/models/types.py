@@ -54,6 +54,15 @@ class CurrentTemplate:
 
 
 @dataclass
+class QueuedDocument:
+    """Документ в очереди для пакетной отправки (ПСКП)"""
+    file_path: str  # Путь к .docx файлу
+    patient_name: str  # ФИО пациента
+    examination_date: str  # Дата осмотра
+    has_eln: bool  # Есть ли ЭЛН
+
+
+@dataclass
 class BotContext:
     """Контекст пользователя бота"""
     clinic: ClinicMode
@@ -63,3 +72,4 @@ class BotContext:
     corrections_count: int = 0  # Счетчик итераций правок
     saved_document_path: Optional[str] = None  # Путь к сохраненному документу для email
     examination_photos: Optional[list] = None  # Фото осмотра для email вложений
+    document_queue: Optional[list] = None  # Очередь документов для пакетной отправки (только для ПСКП)
