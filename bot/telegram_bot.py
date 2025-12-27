@@ -523,16 +523,25 @@ class MedicalBot:
             if user_context.patient_data is None:
                 user_context.patient_data = {}
 
+            # Обновляем контекст новыми данными (для накопления данных между сообщениями)
+            user_context.patient_data.update({k: v for k, v in parsed_data.items() if v is not None})
+
             full_name = parsed_data.get("full_name") or user_context.patient_data.get("full_name", "")
             birth_date = parsed_data.get("birth_date") or user_context.patient_data.get("birth_date", "")
             diagnosis = parsed_data.get("diagnosis", "")
             snils = parsed_data.get("snils") or user_context.patient_data.get("snils")
 
             # Новые поля для дат
-            examination_date = parsed_data.get("examination_date")
-            illness_start_date = parsed_data.get("illness_start_date")
-            sick_leave_days = parsed_data.get("sick_leave_days")
-            eln_refused = parsed_data.get("eln_refused", False)
+            examination_date = parsed_data.get("examination_date") or user_context.patient_data.get("examination_date")
+            illness_start_date = parsed_data.get("illness_start_date") or user_context.patient_data.get("illness_start_date")
+            sick_leave_days = parsed_data.get("sick_leave_days") or user_context.patient_data.get("sick_leave_days")
+            eln_refused = parsed_data.get("eln_refused", user_context.patient_data.get("eln_refused", False))
+
+            # Новые поля для места работы и должности
+            workplace = parsed_data.get("workplace") or user_context.patient_data.get("workplace")
+            position = parsed_data.get("position") or user_context.patient_data.get("position")
+            eln_start_date = parsed_data.get("eln_start_date") or user_context.patient_data.get("eln_start_date")
+            eln_end_date = parsed_data.get("eln_end_date") or user_context.patient_data.get("eln_end_date")
 
             # Проверка обязательных полей
             if not full_name or not birth_date or not diagnosis:
@@ -550,6 +559,10 @@ class MedicalBot:
                 illness_start_date=illness_start_date,
                 sick_leave_days=sick_leave_days,
                 eln_refused=eln_refused,
+                workplace=workplace,
+                position=position,
+                eln_start_date=eln_start_date,
+                eln_end_date=eln_end_date,
             )
 
             # Генерируем шаблон
@@ -823,6 +836,13 @@ class MedicalBot:
                 data["snils"] = re.sub(r"^снилс\s*:\s*", "", line, flags=re.IGNORECASE).strip()
             elif re.match(r"^диагноз\s*:", line, re.IGNORECASE):
                 data["diagnosis"] = re.sub(r"^диагноз\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+            # Новые поля для работы
+            elif re.match(r"^место работы\s*:", line, re.IGNORECASE):
+                data["workplace"] = re.sub(r"^место работы\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+                print(f"✓ Место работы: {data['workplace']}")
+            elif re.match(r"^должность\s*:", line, re.IGNORECASE):
+                data["position"] = re.sub(r"^должность\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+                print(f"✓ Должность: {data['position']}")
             # Новые поля для дат
             elif re.match(r"^дата осмотра\s*:", line, re.IGNORECASE):
                 data["examination_date"] = re.sub(r"^дата осмотра\s*:\s*", "", line, flags=re.IGNORECASE).strip()
@@ -840,21 +860,34 @@ class MedicalBot:
                     data["sick_leave_days"] = None
                     print(f"✓ ЭЛН отказ распознан")
                 else:
-                    # Пытаемся извлечь срок из формата "срок с ДД.ММ по ДД.ММ"
-                    date_range_match = re.search(r"срок\s+с\s+(\d{2}\.\d{2}).*?по\s+(\d{2}\.\d{2})", eln_text)
+                    # Пытаемся извлечь срок из формата "ДД.ММ.ГГГГ по ДД.ММ.ГГГГ" или "срок с ДД.ММ по ДД.ММ"
+                    # Сначала пробуем с полными годами
+                    date_range_match = re.search(r"(\d{2}\.\d{2}\.\d{4})\s+по\s+(\d{2}\.\d{2}\.\d{4})", eln_text)
+                    if not date_range_match:
+                        # Пробуем формат "срок с ДД.ММ по ДД.ММ"
+                        date_range_match = re.search(r"срок\s+с\s+(\d{2}\.\d{2}).*?по\s+(\d{2}\.\d{2})", eln_text)
                     if date_range_match:
                         from datetime import datetime
                         try:
                             start_str = date_range_match.group(1)
                             end_str = date_range_match.group(2)
-                            # Добавляем текущий год
-                            current_year = datetime.now().year
-                            start_date = datetime.strptime(f"{start_str}.{current_year}", "%d.%m.%Y")
-                            end_date = datetime.strptime(f"{end_str}.{current_year}", "%d.%m.%Y")
+
+                            # Парсим даты с учетом наличия года
+                            if len(start_str.split('.')) == 3:  # Полная дата с годом
+                                start_date = datetime.strptime(start_str, "%d.%m.%Y")
+                                end_date = datetime.strptime(end_str, "%d.%m.%Y")
+                            else:  # Только день и месяц
+                                current_year = datetime.now().year
+                                start_date = datetime.strptime(f"{start_str}.{current_year}", "%d.%m.%Y")
+                                end_date = datetime.strptime(f"{end_str}.{current_year}", "%d.%m.%Y")
+
                             days_value = (end_date - start_date).days + 1  # Включительно
                             data["sick_leave_days"] = days_value
                             data["eln_refused"] = False
-                            print(f"✓ ЭЛН срок: с {start_str} по {end_str} = {days_value} дней")
+                            # Сохраняем точные даты ЭЛН
+                            data["eln_start_date"] = start_date.strftime("%d.%m.%Y")
+                            data["eln_end_date"] = end_date.strftime("%d.%m.%Y")
+                            print(f"✓ ЭЛН срок: с {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')} = {days_value} дней")
                         except Exception as e:
                             print(f"⚠️ Ошибка парсинга дат ЭЛН: {e}")
                     # Или ищем "N дней/дня"

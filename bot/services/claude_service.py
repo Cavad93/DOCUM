@@ -366,23 +366,41 @@ class ClaudeService:
                 eln_line = "- ЭЛН: ОТКАЗ (пациент отказался от электронного листа нетрудоспособности)\n"
                 follow_up_line = "- Дата явки к врачу: по необходимости\n"
             else:
-                # Обычный расчёт ЭЛН
-                sick_days = patient_data.sick_leave_days or 3  # По умолчанию 3 дня
-                print(f"🔍 DEBUG: sick_days after 'or 3' = {sick_days}, type={type(sick_days)}")
+                # Проверяем, указаны ли точные даты ЭЛН
+                if patient_data.eln_start_date and patient_data.eln_end_date:
+                    # Используем точные даты ЭЛН из пользовательского ввода
+                    eln_start_date = patient_data.eln_start_date
+                    eln_end_date = patient_data.eln_end_date
 
-                # Валидация sick_days
-                if not isinstance(sick_days, int) or sick_days <= 0 or sick_days > 365:
-                    print(f"⚠️ ВНИМАНИЕ: Некорректное значение sick_days={sick_days}, использую 3 дня")
-                    sick_days = 3
+                    # Вычисляем количество дней
+                    start_dt = datetime.strptime(eln_start_date, "%d.%m.%Y")
+                    end_dt = datetime.strptime(eln_end_date, "%d.%m.%Y")
+                    sick_days = (end_dt - start_dt).days + 1
 
-                exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
-                eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
-                eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
-                follow_up_date = eln_end_date  # Дата повторного визита - последний день ЭЛН
-                eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
-                follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
+                    follow_up_date = eln_end_date
+                    eln_line = f"- Период ЭЛН: с {eln_start_date} по {eln_end_date} ({sick_days} дней)\n"
+                    follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
+                    print(f"✓ Используем точные даты ЭЛН: с {eln_start_date} по {eln_end_date}")
+                else:
+                    # Обычный расчёт ЭЛН от даты осмотра
+                    sick_days = patient_data.sick_leave_days or 3  # По умолчанию 3 дня
+                    print(f"🔍 DEBUG: sick_days after 'or 3' = {sick_days}, type={type(sick_days)}")
+
+                    # Валидация sick_days
+                    if not isinstance(sick_days, int) or sick_days <= 0 or sick_days > 365:
+                        print(f"⚠️ ВНИМАНИЕ: Некорректное значение sick_days={sick_days}, использую 3 дня")
+                        sick_days = 3
+
+                    exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+                    eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
+                    eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
+                    follow_up_date = eln_end_date  # Дата повторного визита - последний день ЭЛН
+                    eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
+                    follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
 
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
+            workplace_line = f"- Место работы: {patient_data.workplace}\n" if patient_data.workplace else ""
+            position_line = f"- Должность: {patient_data.position}\n" if patient_data.position else ""
             illness_line = f"- Дата начала болезни (когда пациент заболел): {illness_date}\n"
             call_line = f"- Дата вызова врача на дом: {call_date}\n"
             exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
@@ -429,7 +447,7 @@ class ClaudeService:
 ДАННЫЕ ПАЦИЕНТА:
 - ФИО: {patient_data.full_name}
 - Дата рождения: {patient_data.birth_date}
-{snils_line}- Диагноз: {patient_data.diagnosis}
+{snils_line}{workplace_line}{position_line}- Диагноз: {patient_data.diagnosis}
 {corrections_context}
 ВАЖНЫЕ ДАТЫ:
 {illness_line}{call_line}{exam_date_line}{eln_line}{follow_up_line}
@@ -450,10 +468,12 @@ class ClaudeService:
 ИНСТРУКЦИИ ПО СТРУКТУРЕ И ОФОРМЛЕНИЮ:
 1. СОХРАНИТЕ структуру всех разделов (Анамнез заболевания, Жалобы, Объективно и т.д.)
 2. Заполните все разделы шаблона реалистичными медицинскими данными
-3. Вставьте данные пациента (ФИО, дата рождения, СНИЛС) в соответствующие места
-4. Заполните разделы с учетом указанного диагноза: {patient_data.diagnosis}
-5. НЕ добавляйте лишний текст до или после шаблона
-6. Верните ТОЛЬКО заполненный шаблон
+3. Вставьте данные пациента (ФИО, дата рождения, СНИЛС{", место работы, должность" if patient_data.workplace or patient_data.position else ""}) в соответствующие места
+4. {"КРИТИЧЕСКИ ВАЖНО: Место работы ОБЯЗАТЕЛЬНО указать как: " + patient_data.workplace if patient_data.workplace else ""}
+5. {"КРИТИЧЕСКИ ВАЖНО: Должность ОБЯЗАТЕЛЬНО указать как: " + patient_data.position if patient_data.position else ""}
+6. Заполните разделы с учетом указанного диагноза: {patient_data.diagnosis}
+7. НЕ добавляйте лишний текст до или после шаблона
+8. Верните ТОЛЬКО заполненный шаблон
 
 КРИТИЧЕСКИ ВАЖНО - НЕ ВКЛЮЧАЙТЕ В ОТВЕТ:
 1. НЕ включайте шапку документа (логотип, контакты клиники)
@@ -581,16 +601,34 @@ class ClaudeService:
                 eln_line = "- ЭЛН: ОТКАЗ (пациент отказался от электронного листа нетрудоспособности)\n"
                 follow_up_line = "- Дата явки к врачу: по необходимости\n"
             else:
-                # Обычный расчёт ЭЛН
-                sick_days = patient_data.sick_leave_days or 3
-                exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
-                eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
-                eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
-                follow_up_date = eln_end_date
-                eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
-                follow_up_line = f"- Дата явки к врачу: {follow_up_date}\n"
+                # Проверяем, указаны ли точные даты ЭЛН
+                if patient_data.eln_start_date and patient_data.eln_end_date:
+                    # Используем точные даты ЭЛН из пользовательского ввода
+                    eln_start_date = patient_data.eln_start_date
+                    eln_end_date = patient_data.eln_end_date
+
+                    # Вычисляем количество дней
+                    start_dt = datetime.strptime(eln_start_date, "%d.%m.%Y")
+                    end_dt = datetime.strptime(eln_end_date, "%d.%m.%Y")
+                    sick_days = (end_dt - start_dt).days + 1
+
+                    follow_up_date = eln_end_date
+                    eln_line = f"- Период ЭЛН: с {eln_start_date} по {eln_end_date} ({sick_days} дней)\n"
+                    follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
+                    print(f"✓ Используем точные даты ЭЛН при исправлении: с {eln_start_date} по {eln_end_date}")
+                else:
+                    # Обычный расчёт ЭЛН от даты осмотра
+                    sick_days = patient_data.sick_leave_days or 3
+                    exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+                    eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
+                    eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
+                    follow_up_date = eln_end_date
+                    eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
+                    follow_up_line = f"- Дата явки к врачу: {follow_up_date}\n"
 
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
+            workplace_line = f"- Место работы: {patient_data.workplace}\n" if patient_data.workplace else ""
+            position_line = f"- Должность: {patient_data.position}\n" if patient_data.position else ""
             illness_line = f"- Дата начала болезни (когда пациент заболел): {illness_date}\n"
             call_line = f"- Дата вызова врача на дом: {call_date}\n"
             exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
@@ -603,7 +641,7 @@ class ClaudeService:
 ДАННЫЕ ПАЦИЕНТА:
 - ФИО: {patient_data.full_name}
 - Дата рождения: {patient_data.birth_date}
-{snils_line}- Диагноз: {patient_data.diagnosis}
+{snils_line}{workplace_line}{position_line}- Диагноз: {patient_data.diagnosis}
 
 ВАЖНЫЕ ДАТЫ:
 {illness_line}{call_line}{exam_date_line}{eln_line}{follow_up_line}
@@ -614,13 +652,15 @@ class ClaudeService:
 ИНСТРУКЦИИ:
 1. Внимательно прочитайте комментарии пользователя
 2. Внесите необходимые исправления в шаблон
-3. СОХРАНИТЕ актуальные даты:
+3. {"КРИТИЧЕСКИ ВАЖНО: Место работы ОБЯЗАТЕЛЬНО указать как: " + patient_data.workplace if patient_data.workplace else ""}
+4. {"КРИТИЧЕСКИ ВАЖНО: Должность ОБЯЗАТЕЛЬНО указать как: " + patient_data.position if patient_data.position else ""}
+5. СОХРАНИТЕ актуальные даты:
    - Дата осмотра/консультации: {exam_date}
    - Начало болезни (считает себя больным с...): {illness_date}
    - Дата вызова врача на дом (в анамнезе): {call_date}
-4. СОХРАНИТЕ структуру шаблона
-5. НЕ добавляйте лишний текст до или после шаблона
-6. Верните ТОЛЬКО исправленный шаблон
+6. СОХРАНИТЕ структуру шаблона
+7. НЕ добавляйте лишний текст до или после шаблона
+8. Верните ТОЛЬКО исправленный шаблон
 
 КРИТИЧЕСКИ ВАЖНО ПРО ЭЛН И ЯВКУ:
 {self._get_eln_instructions(patient_data)}
