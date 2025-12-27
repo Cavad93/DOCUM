@@ -239,6 +239,7 @@ class MedicalBot:
             "Пакетная отправка (только для ПСКП):\n"
             "/queue_status - статус очереди документов\n"
             "/send_batch - отправить все документы одним письмом\n"
+            "/send_batch 27.12.2025 - отправить документы за конкретную дату\n"
             "/clear_queue - очистить очередь документов"
         )
 
@@ -500,7 +501,7 @@ class MedicalBot:
             )
 
     async def send_batch_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команды /send_batch - пакетная отправка накопленных документов (только для ПСКП)"""
+        """Обработка команды /send_batch [дата] - пакетная отправка накопленных документов (только для ПСКП)"""
         if not self.email_service:
             await update.message.reply_text(
                 "❌ Email сервис не настроен.\n"
@@ -527,49 +528,107 @@ class MedicalBot:
             )
             return
 
+        # Парсим дату из аргументов команды (опционально)
+        filter_date = None
+        if context.args and len(context.args) > 0:
+            date_str = context.args[0].strip()
+            # Проверяем формат даты ДД.ММ.ГГГГ
+            if re.match(r"^\d{2}\.\d{2}\.\d{4}$", date_str):
+                filter_date = date_str
+            else:
+                await update.message.reply_text(
+                    "❌ Неверный формат даты\n\n"
+                    "Используйте формат: /send_batch ДД.ММ.ГГГГ\n"
+                    "Пример: /send_batch 27.12.2025"
+                )
+                return
+
         try:
+            # Фильтруем документы по дате если указана
+            docs_to_send = []
+            if filter_date:
+                for doc in user_context.document_queue:
+                    if doc.examination_date == filter_date:
+                        docs_to_send.append(doc)
+
+                if not docs_to_send:
+                    await update.message.reply_text(
+                        f"📭 Нет документов за {filter_date}\n\n"
+                        f"В очереди всего {len(user_context.document_queue)} документ(ов).\n"
+                        "Используйте /queue_status чтобы увидеть все даты."
+                    )
+                    return
+            else:
+                docs_to_send = user_context.document_queue
+
             await update.message.reply_text(
-                f"📧 Отправляю {len(user_context.document_queue)} документ(ов) одним письмом..."
+                f"📧 Отправляю {len(docs_to_send)} документ(ов) одним письмом..."
             )
 
-            # Подготавливаем список документов для отправки
-            documents = []
-            has_any_eln = False
-            for doc in user_context.document_queue:
-                documents.append({
+            # Разделяем документы на две группы: с ЭЛН и без ЭЛН
+            docs_with_eln = []
+            docs_without_eln = []
+            for doc in docs_to_send:
+                doc_data = {
                     "file_path": doc.file_path,
                     "patient_name": doc.patient_name,
                     "examination_date": doc.examination_date
-                })
+                }
                 if doc.has_eln:
-                    has_any_eln = True
+                    docs_with_eln.append(doc_data)
+                else:
+                    docs_without_eln.append(doc_data)
 
-            # Отправляем все документы одним письмом
+            # Определяем дату для темы письма
+            if filter_date:
+                batch_date = filter_date
+            else:
+                # Используем дату первого документа или текущую
+                batch_date = docs_to_send[0].examination_date if docs_to_send else datetime.now().strftime("%d.%m.%Y")
+
+            # Отправляем документы с правильной фильтрацией получателей
             success, error = await self.email_service.send_batch_documents(
-                documents=documents,
+                documents_with_eln=docs_with_eln,
+                documents_without_eln=docs_without_eln,
                 clinic=user_context.clinic.value,
                 doctor_name="Гаджимурадлы Д.Д",
-                has_eln=has_any_eln
+                batch_date=batch_date
             )
 
             if success:
-                # Получаем список всех получателей
+                # Получаем информацию о получателях для отчета
                 all_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="all")
-                eln_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="eln_only") if has_any_eln else []
-                total_recipients = list(set(all_recipients + eln_recipients))
+                eln_recipients = self.email_service.get_recipients(clinic=user_context.clinic.value, recipient_type="eln_only")
 
-                await update.message.reply_text(
-                    f"✅ Пакет из {len(documents)} документ(ов) отправлен!\n\n"
-                    f"Получатели: {', '.join(total_recipients)}"
-                )
+                total_docs = len(docs_with_eln) + len(docs_without_eln)
+                msg = f"✅ Пакет из {total_docs} документ(ов) отправлен!\n\n"
 
-                # Очищаем очередь после успешной отправки
-                user_context.document_queue = []
+                if docs_with_eln and docs_without_eln:
+                    msg += f"Все документы ({total_docs} шт.) → {', '.join(all_recipients)}\n"
+                    if eln_recipients:
+                        msg += f"Документы с ЭЛН ({len(docs_with_eln)} шт.) → {', '.join(eln_recipients)}"
+                elif docs_with_eln:
+                    total_recipients = list(set(all_recipients + eln_recipients))
+                    msg += f"Получатели: {', '.join(total_recipients)}"
+                else:
+                    msg += f"Получатели: {', '.join(all_recipients)}"
+
+                await update.message.reply_text(msg)
+
+                # Удаляем отправленные документы из очереди
+                if filter_date:
+                    # Удаляем только документы за указанную дату
+                    user_context.document_queue = [doc for doc in user_context.document_queue if doc.examination_date != filter_date]
+                else:
+                    # Очищаем всю очередь
+                    user_context.document_queue = []
             else:
                 await update.message.reply_text(f"⚠️ Ошибка отправки email:\n{error}")
 
         except Exception as e:
             print(f"Ошибка пакетной отправки: {e}")
+            import traceback
+            traceback.print_exc()
             await update.message.reply_text(f"❌ Ошибка при отправке: {str(e)}")
 
     async def queue_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

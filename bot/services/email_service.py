@@ -307,108 +307,152 @@ class EmailService:
 
     async def send_batch_documents(
         self,
-        documents: List[dict],
+        documents_with_eln: List[dict],
+        documents_without_eln: List[dict],
         clinic: str = "dinastiya",
         doctor_name: str = "Гаджимурадлы Д.Д",
-        has_eln: bool = True
+        batch_date: str = None
     ) -> tuple[bool, str]:
         """
-        Отправить несколько документов одним письмом (пакетная отправка для ПСКП)
+        Отправить несколько документов одним или несколькими письмами (пакетная отправка для ПСКП)
+
+        Логика отправки:
+        - Все документы → "all" получателям
+        - Только документы с ЭЛН → "eln_only" получателям
 
         Args:
-            documents: Список документов, каждый содержит:
+            documents_with_eln: Список документов С ЭЛН, каждый содержит:
                 - file_path: путь к .docx файлу
                 - patient_name: ФИО пациента
                 - examination_date: дата осмотра
+            documents_without_eln: Список документов БЕЗ ЭЛН
             clinic: Название клиники ("dinastiya" или "pskp")
             doctor_name: ФИО врача (уже сокращённое)
-            has_eln: Есть ли хотя бы один документ с ЭЛН
+            batch_date: Дата для темы письма (например, "27.12.2025")
 
         Returns:
             Tuple (успех, сообщение об ошибке или None)
         """
-        # Получаем обычных получателей (получают все осмотры)
         all_recipients = self.get_recipients(clinic, recipient_type="all")
+        eln_recipients = self.get_recipients(clinic, recipient_type="eln_only")
 
-        # Получаем ЭЛН-получателей (получают только осмотры с ЭЛН)
-        eln_recipients = []
-        if has_eln:
-            eln_recipients = self.get_recipients(clinic, recipient_type="eln_only")
-
-        # Объединяем списки и удаляем дубликаты
-        recipients = list(set(all_recipients + eln_recipients))
-
-        if not recipients:
+        if not all_recipients and not eln_recipients:
             return False, "Нет настроенных получателей. Используйте /add_email"
 
-        if not documents:
+        all_documents = documents_with_eln + documents_without_eln
+        if not all_documents:
             return False, "Нет документов для отправки"
 
         # Проверяем существование всех файлов
-        for doc in documents:
+        for doc in all_documents:
             if not Path(doc["file_path"]).exists():
                 return False, f"Файл не найден: {doc['file_path']}"
 
         try:
-            # Формируем тему письма
-            today = datetime.now().strftime("%d.%m.%Y")
-            subject = f"Пакет осмотров {today} {doctor_name} ({len(documents)} шт.)"
+            # Используем указанную дату или текущую
+            if not batch_date:
+                batch_date = datetime.now().strftime("%d.%m.%Y")
 
-            # Создаём письмо
-            msg = MIMEMultipart()
-            msg['From'] = self.smtp_user
-            msg['To'] = ', '.join(recipients)
-            msg['Subject'] = subject
+            # 1. Отправляем ВСЕ документы на "all" получателей
+            if all_recipients and all_documents:
+                subject = f"Осмотры врача {doctor_name} за {batch_date}"
 
-            # Формируем список пациентов для тела письма
-            patients_list = []
-            for i, doc in enumerate(documents, 1):
-                short_name = self._shorten_name(doc["patient_name"])
-                patients_list.append(f"{i}. {short_name} ({doc['examination_date']})")
+                msg = MIMEMultipart()
+                msg['From'] = self.smtp_user
+                msg['To'] = ', '.join(all_recipients)
+                msg['Subject'] = subject
 
-            # Текст письма
-            body = f"""Пакет медицинских осмотров
+                # Формируем список пациентов
+                patients_list = []
+                for i, doc in enumerate(all_documents, 1):
+                    short_name = self._shorten_name(doc["patient_name"])
+                    patients_list.append(f"{i}. {short_name} ({doc['examination_date']})")
+
+                body = f"""Пакет медицинских осмотров
 
 Врач: {doctor_name}
-Дата отправки: {today}
-Количество осмотров: {len(documents)}
+Дата: {batch_date}
+Количество осмотров: {len(all_documents)}
 
 Список пациентов:
 {chr(10).join(patients_list)}
 
 Документы во вложении.
 """
-            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+                msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
-            # Прикрепляем все документы
-            for i, doc in enumerate(documents, 1):
-                file_path = doc["file_path"]
-                patient_name = doc["patient_name"]
-                examination_date = doc["examination_date"]
+                # Прикрепляем все документы
+                for i, doc in enumerate(all_documents, 1):
+                    safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in doc["patient_name"])
+                    filename = f"{i}_{safe_name}_ГОТОВЫЙ_ОСМОТР_{doc['examination_date'].replace('.', '-')}.docx"
 
-                # Формируем имя файла для вложения
-                safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in patient_name)
-                filename = f"{i}_{safe_name}_ГОТОВЫЙ_ОСМОТР_{examination_date.replace('.', '-')}.docx"
+                    with open(doc["file_path"], 'rb') as f:
+                        attachment = MIMEApplication(f.read(), _subtype="docx")
+                        attachment.add_header('Content-Disposition', 'attachment', filename=filename)
+                        msg.attach(attachment)
 
-                # Прикрепляем файл
-                with open(file_path, 'rb') as f:
-                    attachment = MIMEApplication(f.read(), _subtype="docx")
-                    attachment.add_header('Content-Disposition', 'attachment', filename=filename)
-                    msg.attach(attachment)
+                # Отправляем
+                with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                    server.starttls()
+                    server.login(self.smtp_user, self.smtp_password)
+                    server.send_message(msg)
 
-            # Отправляем через Yandex SMTP
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.smtp_user, self.smtp_password)
-                server.send_message(msg)
+                print(f"✓ Все документы ({len(all_documents)} шт.) отправлены на 'all' получателей: {', '.join(all_recipients)}")
 
-            print(f"✓ Пакет из {len(documents)} документов отправлен: {subject}")
-            print(f"  Получатели: {', '.join(recipients)}")
+            # 2. Отправляем ТОЛЬКО документы с ЭЛН на "eln_only" получателей
+            if eln_recipients and documents_with_eln:
+                subject = f"Осмотры врача {doctor_name} за {batch_date}"
+
+                msg = MIMEMultipart()
+                msg['From'] = self.smtp_user
+                msg['To'] = ', '.join(eln_recipients)
+                msg['Subject'] = subject
+
+                # Формируем список пациентов (только с ЭЛН)
+                patients_list = []
+                for i, doc in enumerate(documents_with_eln, 1):
+                    short_name = self._shorten_name(doc["patient_name"])
+                    patients_list.append(f"{i}. {short_name} ({doc['examination_date']})")
+
+                body = f"""Пакет медицинских осмотров С ЭЛН
+
+Врач: {doctor_name}
+Дата: {batch_date}
+Количество осмотров с ЭЛН: {len(documents_with_eln)}
+
+Список пациентов:
+{chr(10).join(patients_list)}
+
+Документы во вложении.
+"""
+                msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
+                # Прикрепляем только документы с ЭЛН
+                for i, doc in enumerate(documents_with_eln, 1):
+                    safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in doc["patient_name"])
+                    filename = f"{i}_{safe_name}_ГОТОВЫЙ_ОСМОТР_{doc['examination_date'].replace('.', '-')}.docx"
+
+                    with open(doc["file_path"], 'rb') as f:
+                        attachment = MIMEApplication(f.read(), _subtype="docx")
+                        attachment.add_header('Content-Disposition', 'attachment', filename=filename)
+                        msg.attach(attachment)
+
+                # Отправляем
+                with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+                    server.starttls()
+                    server.login(self.smtp_user, self.smtp_password)
+                    server.send_message(msg)
+
+                print(f"✓ Документы с ЭЛН ({len(documents_with_eln)} шт.) отправлены на 'eln_only' получателей: {', '.join(eln_recipients)}")
+
+            print(f"✓ Пакетная отправка завершена: {subject}")
             return True, None
 
         except Exception as e:
             error_msg = f"Ошибка отправки пакета: {e}"
             print(error_msg)
+            import traceback
+            traceback.print_exc()
             return False, error_msg
 
     def _shorten_name(self, full_name: str) -> str:
