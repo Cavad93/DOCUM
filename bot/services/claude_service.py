@@ -9,7 +9,6 @@ from docx import Document
 
 from bot.models.types import PatientData, ClinicMode
 from bot.services.memory_service import MemoryService
-from bot.services.corrections_memory_service import CorrectionsMemoryService
 
 
 class ClaudeService:
@@ -29,7 +28,6 @@ class ClaudeService:
         self.client = Anthropic(api_key=api_key)
         self.template_cache: Dict[ClinicMode, str] = {}
         self.memory_service = MemoryService()
-        self.corrections_memory = CorrectionsMemoryService()
         self._load_templates()
 
     def _load_templates(self) -> None:
@@ -405,50 +403,13 @@ class ClaudeService:
             call_line = f"- Дата вызова врача на дом: {call_date}\n"
             exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
 
-            # Получаем возраст пациента для поиска похожих исправлений
-            patient_age = None
-            try:
-                birth_dt = datetime.strptime(patient_data.birth_date, "%d.%m.%Y")
-                exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
-                patient_age = (exam_dt - birth_dt).days // 365
-            except Exception:
-                pass
-
-            # Получаем похожие исправления из истории (только топ-2 для экономии токенов)
-            similar_corrections = self.corrections_memory.get_similar_corrections(
-                diagnosis=patient_data.diagnosis,
-                patient_age=patient_age,
-                clinic=clinic.value,
-                limit=2  # Максимум 2 исправления для экономии токенов
-            )
-
-            # Формируем контекст из истории исправлений
-            corrections_context = ""
-            if similar_corrections:
-                corrections_context = "\n\nАВТОМАТИЧЕСКИЕ УЛУЧШЕНИЯ НА ОСНОВЕ ВАШИХ ПРЕДПОЧТЕНИЙ:\n"
-                corrections_context += "Анализ вашей истории исправлений:\n"
-
-                for i, item in enumerate(similar_corrections, 1):
-                    corr = item["correction"]
-                    score = item["relevance_score"]
-                    # Берем только первые 150 символов для экономии
-                    correction_preview = corr['correction_text'][:150]
-                    if len(corr['correction_text']) > 150:
-                        correction_preview += "..."
-
-                    corrections_context += f"{i}. Диагноз: {corr['diagnosis']} ({score:.0%})\n"
-                    corrections_context += f"   Правка: {correction_preview}\n"
-
-                corrections_context += "\nПримените эти улучшения, если релевантны!\n"
-                print(f"✓ Найдено {len(similar_corrections)} похожих исправлений для автоматического применения")
-
             prompt = f"""Вы медицинский ассистент. Ваша задача - заполнить готовый шаблон медицинского осмотра.
 
 ДАННЫЕ ПАЦИЕНТА:
 - ФИО: {patient_data.full_name}
 - Дата рождения: {patient_data.birth_date}
 {snils_line}{workplace_line}{position_line}- Диагноз: {patient_data.diagnosis}
-{corrections_context}
+
 ВАЖНЫЕ ДАТЫ:
 {illness_line}{call_line}{exam_date_line}{eln_line}{follow_up_line}
 
@@ -696,29 +657,6 @@ class ClaudeService:
             )
 
             corrected_template = message.content[0].text
-
-            # Сохраняем исправление в память для обучения
-            try:
-                # Вычисляем возраст пациента
-                patient_age = None
-                try:
-                    from datetime import datetime
-                    birth_dt = datetime.strptime(patient_data.birth_date, "%d.%m.%Y")
-                    exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
-                    patient_age = (exam_dt - birth_dt).days // 365
-                except Exception:
-                    pass
-
-                self.corrections_memory.add_correction(
-                    diagnosis=patient_data.diagnosis,
-                    patient_age=patient_age,
-                    correction_text=corrections,
-                    original_template=current_template,
-                    corrected_template=corrected_template,
-                    clinic=clinic.value
-                )
-            except Exception as mem_error:
-                print(f"⚠️ Не удалось сохранить исправление в память: {mem_error}")
 
             return corrected_template
         except Exception as e:
