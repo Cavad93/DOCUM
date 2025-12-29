@@ -23,6 +23,7 @@ from bot.models.types import PatientData, ClinicMode, BotState, BotContext, Exam
 from bot.services.claude_service import ClaudeService
 from bot.services.archive_service import ArchiveService
 from bot.services.email_service import EmailService
+from bot.services.document_queue_service import DocumentQueueService
 
 
 class MedicalBot:
@@ -60,6 +61,7 @@ class MedicalBot:
         )
         self.claude_service = ClaudeService(claude_api_key)
         self.archive_service = ArchiveService()
+        self.document_queue_service = DocumentQueueService()
         self.user_contexts: Dict[int, BotContext] = {}
 
         # Email сервис (опциональный)
@@ -594,14 +596,6 @@ class MedicalBot:
             )
             return
 
-        # Проверяем наличие документов в очереди
-        if not user_context.document_queue or len(user_context.document_queue) == 0:
-            await update.message.reply_text(
-                "📭 Очередь документов пуста\n\n"
-                "Создайте несколько осмотров, они будут автоматически добавлены в очередь."
-            )
-            return
-
         # Парсим дату из аргументов команды (опционально)
         filter_date = None
         if context.args and len(context.args) > 0:
@@ -618,22 +612,21 @@ class MedicalBot:
                 return
 
         try:
-            # Фильтруем документы по дате если указана
-            docs_to_send = []
-            if filter_date:
-                for doc in user_context.document_queue:
-                    if doc.examination_date == filter_date:
-                        docs_to_send.append(doc)
+            # Получаем документы из постоянной очереди
+            docs_to_send = self.document_queue_service.get_queue(user_id, user_context.clinic.value, filter_date)
 
-                if not docs_to_send:
+            if not docs_to_send:
+                if filter_date:
                     await update.message.reply_text(
                         f"📭 Нет документов за {filter_date}\n\n"
-                        f"В очереди всего {len(user_context.document_queue)} документ(ов).\n"
                         "Используйте /queue_status чтобы увидеть все даты."
                     )
-                    return
-            else:
-                docs_to_send = user_context.document_queue
+                else:
+                    await update.message.reply_text(
+                        "📭 Очередь документов пуста\n\n"
+                        "Создайте несколько осмотров, они будут автоматически добавлены в очередь."
+                    )
+                return
 
             await update.message.reply_text(
                 f"📧 Отправляю {len(docs_to_send)} документ(ов) одним письмом..."
@@ -644,11 +637,11 @@ class MedicalBot:
             docs_without_eln = []
             for doc in docs_to_send:
                 doc_data = {
-                    "file_path": doc.file_path,
-                    "patient_name": doc.patient_name,
-                    "examination_date": doc.examination_date
+                    "file_path": doc["file_path"],
+                    "patient_name": doc["patient_name"],
+                    "examination_date": doc["examination_date"]
                 }
-                if doc.has_eln:
+                if doc["has_eln"]:
                     docs_with_eln.append(doc_data)
                 else:
                     docs_without_eln.append(doc_data)
@@ -658,7 +651,7 @@ class MedicalBot:
                 batch_date = filter_date
             else:
                 # Используем дату первого документа или текущую
-                batch_date = docs_to_send[0].examination_date if docs_to_send else datetime.now().strftime("%d.%m.%Y")
+                batch_date = docs_to_send[0]["examination_date"] if docs_to_send else datetime.now().strftime("%d.%m.%Y")
 
             # Отправляем документы с правильной фильтрацией получателей
             success, error = await self.email_service.send_batch_documents(
@@ -690,12 +683,7 @@ class MedicalBot:
                 await update.message.reply_text(msg)
 
                 # Удаляем отправленные документы из очереди
-                if filter_date:
-                    # Удаляем только документы за указанную дату
-                    user_context.document_queue = [doc for doc in user_context.document_queue if doc.examination_date != filter_date]
-                else:
-                    # Очищаем всю очередь
-                    user_context.document_queue = []
+                self.document_queue_service.clear_queue(user_id, user_context.clinic.value, filter_date)
             else:
                 await update.message.reply_text(f"⚠️ Ошибка отправки email:\n{error}")
 
@@ -717,31 +705,34 @@ class MedicalBot:
             )
             return
 
-        if not user_context.document_queue or len(user_context.document_queue) == 0:
+        # Получаем статус очереди из постоянного хранилища
+        queue_status = self.document_queue_service.get_queue_status(user_id, user_context.clinic.value)
+
+        if queue_status['total'] == 0:
             await update.message.reply_text(
                 "📭 Очередь документов пуста\n\n"
                 "Создайте несколько осмотров, они будут автоматически добавлены в очередь."
             )
             return
 
-        # Формируем список документов
-        documents_list = []
-        eln_count = 0
-        for i, doc in enumerate(user_context.document_queue, 1):
-            eln_badge = "✅ ЭЛН" if doc.has_eln else "❌ без ЭЛН"
-            if doc.has_eln:
-                eln_count += 1
-            documents_list.append(
-                f"{i}. {doc.patient_name} ({doc.examination_date}) - {eln_badge}"
+        # Формируем детальную информацию по датам
+        date_info = []
+        for date, stats in sorted(queue_status['by_date'].items()):
+            date_info.append(
+                f"📅 {date}: {stats['total']} док. (✅ {stats['with_eln']} с ЭЛН, ❌ {stats['without_eln']} без ЭЛН)"
             )
 
-        docs_text = "\n".join(documents_list)
+        dates_text = "\n".join(date_info) if date_info else ""
+
         await update.message.reply_text(
-            f"📋 В очереди: {len(user_context.document_queue)} документ(ов)\n"
-            f"С ЭЛН: {eln_count}, Без ЭЛН: {len(user_context.document_queue) - eln_count}\n\n"
-            f"{docs_text}\n\n"
+            f"📋 Очередь документов ПСКП\n\n"
+            f"Всего: {queue_status['total']} документ(ов)\n"
+            f"• С ЭЛН: {queue_status['with_eln']}\n"
+            f"• Без ЭЛН: {queue_status['without_eln']}\n\n"
+            f"{dates_text}\n\n"
             f"Управление:\n"
             f"/send_batch - отправить все одним письмом\n"
+            f"/send_batch 28.12.2025 - отправить за конкретную дату\n"
             f"/clear_queue - очистить очередь"
         )
 
@@ -757,27 +748,16 @@ class MedicalBot:
             )
             return
 
-        if not user_context.document_queue or len(user_context.document_queue) == 0:
+        # Очищаем очередь через сервис
+        deleted_count = self.document_queue_service.clear_queue(user_id, user_context.clinic.value)
+
+        if deleted_count == 0:
             await update.message.reply_text("📭 Очередь уже пуста")
             return
 
-        # Удаляем временные файлы
-        deleted_count = 0
-        for doc in user_context.document_queue:
-            try:
-                if Path(doc.file_path).exists():
-                    Path(doc.file_path).unlink()
-                    deleted_count += 1
-            except Exception as e:
-                print(f"Ошибка удаления файла {doc.file_path}: {e}")
-
-        queue_size = len(user_context.document_queue)
-        user_context.document_queue = []
-
         await update.message.reply_text(
             f"🗑️ Очередь очищена\n"
-            f"Удалено документов: {queue_size}\n"
-            f"Удалено файлов: {deleted_count}"
+            f"Удалено документов: {deleted_count}"
         )
 
     async def button_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1258,29 +1238,35 @@ class MedicalBot:
                     examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
                     has_eln = not template.patient_data.eln_refused
 
-                    # Инициализируем очередь если её нет
-                    if user_context.document_queue is None:
-                        user_context.document_queue = []
-
-                    # Добавляем документ в очередь
-                    queued_doc = QueuedDocument(
-                        file_path=temp_filepath,
+                    # Добавляем документ в постоянную очередь
+                    user_id = update.effective_user.id
+                    success = self.document_queue_service.add_document(
+                        user_id=user_id,
+                        clinic=user_context.clinic.value,
+                        temp_filepath=temp_filepath,
                         patient_name=template.patient_data.full_name,
                         examination_date=examination_date,
                         has_eln=has_eln
                     )
-                    user_context.document_queue.append(queued_doc)
 
-                    eln_status = "с ЭЛН" if has_eln else "БЕЗ ЭЛН (отказ)"
-                    queue_size = len(user_context.document_queue)
-                    await message.reply_text(
-                        f"✅ Документ добавлен в очередь ({eln_status})\n\n"
-                        f"📋 В очереди: {queue_size} документ(ов)\n\n"
-                        f"Управление очередью:\n"
-                        f"/queue_status - статус очереди\n"
-                        f"/send_batch - отправить все документы одним письмом\n"
-                        f"/clear_queue - очистить очередь"
-                    )
+                    if success:
+                        # Получаем статус очереди
+                        queue_status = self.document_queue_service.get_queue_status(user_id, user_context.clinic.value)
+                        eln_status = "с ЭЛН" if has_eln else "БЕЗ ЭЛН (отказ)"
+
+                        await message.reply_text(
+                            f"✅ Документ добавлен в очередь ({eln_status})\n\n"
+                            f"📋 В очереди: {queue_status['total']} документ(ов)\n"
+                            f"• С ЭЛН: {queue_status['with_eln']}\n"
+                            f"• Без ЭЛН: {queue_status['without_eln']}\n\n"
+                            f"Управление очередью:\n"
+                            f"/queue_status - статус очереди\n"
+                            f"/send_batch - отправить все документы одним письмом\n"
+                            f"/send_batch 28.12.2025 - отправить за конкретную дату\n"
+                            f"/clear_queue - очистить очередь"
+                        )
+                    else:
+                        await message.reply_text("⚠️ Не удалось добавить документ в очередь")
 
             # Сообщение о готовности к следующему пациенту
             await message.reply_text("✅ Можете отправить данные следующего пациента.")
