@@ -881,7 +881,73 @@ class MedicalBot:
             photo_bytes = await file.download_as_bytearray()
             image_base64 = base64.b64encode(photo_bytes).decode("utf-8")
 
-            # Распознаем данные
+            # Сначала пробуем распознать как медицинский документ (выписка, анализы)
+            try:
+                medical_data = await self.claude_service.extract_medical_document_data(image_base64, "image/jpeg")
+
+                # Проверяем, является ли это медицинским документом с диагнозом
+                if medical_data.get("diagnosis") or medical_data.get("document_type"):
+                    # Это медицинский документ (выписка, анализы, осмотр)
+                    if user_context.patient_data is None:
+                        user_context.patient_data = {}
+
+                    # Автоматически заполняем все распознанные поля
+                    if medical_data.get("full_name"):
+                        user_context.patient_data["full_name"] = medical_data["full_name"]
+                    if medical_data.get("birth_date"):
+                        user_context.patient_data["birth_date"] = medical_data["birth_date"]
+                    if medical_data.get("snils"):
+                        user_context.patient_data["snils"] = medical_data["snils"]
+                    if medical_data.get("examination_date"):
+                        user_context.patient_data["examination_date"] = medical_data["examination_date"]
+                    if medical_data.get("diagnosis"):
+                        user_context.patient_data["diagnosis"] = medical_data["diagnosis"]
+                    if medical_data.get("workplace"):
+                        user_context.patient_data["workplace"] = medical_data["workplace"]
+                    if medical_data.get("position"):
+                        user_context.patient_data["position"] = medical_data["position"]
+
+                    # Формируем сообщение с распознанными данными
+                    doc_type = medical_data.get("document_type", "медицинский документ")
+                    message = f"✅ Распознан {doc_type}!\n\n"
+                    message += "📋 Извлеченные данные:\n\n"
+
+                    if medical_data.get("full_name"):
+                        message += f"👤 ФИО: {medical_data['full_name']}\n"
+                    if medical_data.get("birth_date"):
+                        message += f"📅 Дата рождения: {medical_data['birth_date']}\n"
+                    if medical_data.get("snils"):
+                        message += f"🔢 СНИЛС: {medical_data['snils']}\n"
+                    if medical_data.get("workplace"):
+                        message += f"🏢 Место работы: {medical_data['workplace']}\n"
+                    if medical_data.get("position"):
+                        message += f"💼 Должность: {medical_data['position']}\n"
+                    if medical_data.get("examination_date"):
+                        message += f"📆 Дата осмотра: {medical_data['examination_date']}\n"
+                    if medical_data.get("diagnosis"):
+                        message += f"🏥 Диагноз: {medical_data['diagnosis']}\n"
+
+                    # Добавляем дополнительную информацию если есть
+                    if medical_data.get("complaints"):
+                        message += f"\n💬 Жалобы:\n{medical_data['complaints'][:200]}...\n" if len(medical_data['complaints']) > 200 else f"\n💬 Жалобы: {medical_data['complaints']}\n"
+                    if medical_data.get("anamnesis"):
+                        message += f"\n📖 Анамнез:\n{medical_data['anamnesis'][:200]}...\n" if len(medical_data['anamnesis']) > 200 else f"\n📖 Анамнез: {medical_data['anamnesis']}\n"
+                    if medical_data.get("objective"):
+                        message += f"\n🔬 Объективно:\n{medical_data['objective'][:200]}...\n" if len(medical_data['objective']) > 200 else f"\n🔬 Объективно: {medical_data['objective']}\n"
+                    if medical_data.get("examinations"):
+                        message += f"\n🧪 Обследования:\n{medical_data['examinations'][:200]}...\n" if len(medical_data['examinations']) > 200 else f"\n🧪 Обследования: {medical_data['examinations']}\n"
+                    if medical_data.get("recommendations"):
+                        message += f"\n💊 Рекомендации:\n{medical_data['recommendations'][:200]}...\n" if len(medical_data['recommendations']) > 200 else f"\n💊 Рекомендации: {medical_data['recommendations']}\n"
+
+                    message += "\n✏️ Добавьте недостающие данные текстом (ЭЛН, дополнительная информация) или отправьте команду для создания осмотра."
+
+                    await update.message.reply_text(message)
+                    return
+
+            except Exception as med_error:
+                print(f"Не удалось распознать как медицинский документ: {med_error}")
+
+            # Если это не медицинский документ, пробуем распознать как СНИЛС
             extracted_data = await self.claude_service.extract_data_from_image(image_base64, "image/jpeg")
 
             # Сохраняем в контекст
@@ -890,7 +956,7 @@ class MedicalBot:
 
             user_context.patient_data.update(extracted_data)
 
-            message = "✅ Данные распознаны:\n\n"
+            message = "✅ Данные распознаны (СНИЛС):\n\n"
             if extracted_data.get("full_name"):
                 message += f"ФИО: {extracted_data['full_name']}\n"
             if extracted_data.get("birth_date"):

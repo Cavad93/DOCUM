@@ -186,6 +186,112 @@ class ClaudeService:
             print(f"Ошибка распознавания изображения: {e}")
             raise
 
+    async def extract_medical_document_data(self, image_base64: str, media_type: str = "image/jpeg") -> Dict[str, str]:
+        """
+        Распознавание медицинских документов (выписки, анализы, осмотры)
+        Использует Claude Sonnet 4.5 для извлечения медицинской информации
+
+        Args:
+            image_base64: Изображение в base64
+            media_type: Тип медиа (image/jpeg, image/png и т.д.)
+
+        Returns:
+            Словарь с распознанными медицинскими данными
+        """
+        try:
+            message = self.client.messages.create(
+                model=self.OCR_MODEL,
+                max_tokens=2048,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": image_base64,
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": """Проанализируйте этот медицинский документ и извлеките всю доступную информацию.
+
+Это может быть:
+- Выписка из больницы
+- Результаты анализов
+- Медицинский осмотр
+- Направление
+- Другой медицинский документ
+
+Извлеките следующую информацию (если присутствует):
+- ФИО пациента
+- Дата рождения
+- СНИЛС
+- Дата осмотра/выписки
+- Диагноз (основной и сопутствующие)
+- Жалобы пациента
+- Анамнез заболевания
+- Объективные данные (АД, пульс, температура и т.д.)
+- Результаты обследований/анализов
+- Рекомендации/назначения
+- Место работы
+- Должность
+- Любая другая важная медицинская информация
+
+Ответьте в формате JSON:
+{
+  "documentType": "тип документа (выписка/анализы/осмотр/направление/другое)",
+  "fullName": "ФИО",
+  "birthDate": "дата рождения в формате ДД.ММ.ГГГГ",
+  "snils": "СНИЛС",
+  "examinationDate": "дата осмотра/выписки в формате ДД.ММ.ГГГГ",
+  "diagnosis": "диагноз",
+  "complaints": "жалобы",
+  "anamnesis": "анамнез заболевания",
+  "objective": "объективные данные",
+  "examinations": "результаты обследований",
+  "recommendations": "рекомендации",
+  "workplace": "место работы",
+  "position": "должность",
+  "additionalInfo": "дополнительная информация"
+}
+
+Если какого-то поля нет в документе, оставьте его пустым ("").""",
+                            },
+                        ],
+                    }
+                ],
+            )
+
+            response_text = message.content[0].text
+            # Извлекаем JSON из ответа
+            json_match = response_text[response_text.find("{"):response_text.rfind("}") + 1]
+            if json_match:
+                data = json.loads(json_match)
+                return {
+                    "document_type": data.get("documentType", ""),
+                    "full_name": data.get("fullName", ""),
+                    "birth_date": data.get("birthDate", ""),
+                    "snils": data.get("snils", ""),
+                    "examination_date": data.get("examinationDate", ""),
+                    "diagnosis": data.get("diagnosis", ""),
+                    "complaints": data.get("complaints", ""),
+                    "anamnesis": data.get("anamnesis", ""),
+                    "objective": data.get("objective", ""),
+                    "examinations": data.get("examinations", ""),
+                    "recommendations": data.get("recommendations", ""),
+                    "workplace": data.get("workplace", ""),
+                    "position": data.get("position", ""),
+                    "additional_info": data.get("additionalInfo", ""),
+                }
+
+            return {}
+        except Exception as e:
+            print(f"Ошибка распознавания медицинского документа: {e}")
+            raise
+
     async def select_best_template(
         self,
         patient_data: PatientData,
