@@ -396,16 +396,31 @@ class ClaudeService:
 - НЕ указывайте конкретные даты ЭЛН и явки к врачу!
 - НЕ пишите "Режим: домашний" если это не указано в шаблоне"""
         else:
-            # Рассчитываем даты для обычного ЭЛН
+            # Проверяем, указаны ли точные даты ЭЛН
             from datetime import datetime, timedelta
-            exam_date = patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
-            sick_days = patient_data.sick_leave_days or 3
-            exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
-            eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
-            eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
-            follow_up_date = eln_end_date
 
-            return f"""- Период ЭЛН (электронный лист нетрудоспособности) → с {exam_date} по {eln_end_date}
+            if patient_data.eln_start_date and patient_data.eln_end_date:
+                # ИСПОЛЬЗУЕМ ТОЧНЫЕ ДАТЫ ЭЛН ИЗ ПОЛЬЗОВАТЕЛЬСКОГО ВВОДА
+                eln_start_date = patient_data.eln_start_date
+                eln_end_date = patient_data.eln_end_date
+                follow_up_date = eln_end_date
+
+                return f"""КРИТИЧЕСКИ ВАЖНО - ИСПОЛЬЗУЙТЕ ТОЧНЫЕ ДАТЫ ЭЛН:
+- Период ЭЛН (электронный лист нетрудоспособности) → ОБЯЗАТЕЛЬНО с {eln_start_date} по {eln_end_date}
+- Дата явки к врачу (повторный прием) → ОБЯЗАТЕЛЬНО {follow_up_date}
+- Напишите ТОЧНО: "Нетрудоспособен, ЭЛН с {eln_start_date} по {eln_end_date}"
+- Напишите ТОЧНО: "Явка к врачу: {follow_up_date}"
+- НЕ МЕНЯЙТЕ эти даты! Они указаны пользователем!"""
+            else:
+                # Рассчитываем даты для обычного ЭЛН
+                exam_date = patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
+                sick_days = patient_data.sick_leave_days or 3
+                exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+                eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
+                eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
+                follow_up_date = eln_end_date
+
+                return f"""- Период ЭЛН (электронный лист нетрудоспособности) → с {exam_date} по {eln_end_date}
 - Дата явки к врачу (повторный прием) → {follow_up_date}
 - Напишите: "Нетрудоспособен, ЭЛН с {exam_date} по {eln_end_date}"
 - Напишите: "Явка к врачу: {follow_up_date}" """
