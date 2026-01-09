@@ -14,9 +14,9 @@ from bot.services.memory_service import MemoryService
 class ClaudeService:
     """Сервис для работы с Claude AI API"""
 
-    # Актуальные модели Claude (2025)
-    OCR_MODEL = "claude-sonnet-4-5-20250929"  # Sonnet 4.5 для OCR СНИЛС
-    GENERATION_MODEL = "claude-sonnet-4-5-20250929"  # Sonnet 4.5 для генерации и исправления шаблонов
+    # Актуальные модели Claude (2026)
+    OCR_MODEL = "claude-haiku-4-5-20251001"  # Haiku 4.5 для OCR документов
+    GENERATION_MODEL = "claude-haiku-4-5-20251001"  # Haiku 4.5 для генерации и исправления шаблонов
 
     def __init__(self, api_key: str):
         """
