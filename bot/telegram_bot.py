@@ -1328,8 +1328,10 @@ class MedicalBot:
                 data["is_student"] = True
                 print(f"✓ Курс (студент): {data['position']}")
             # Студенческая справка (вместо ЭЛН)
-            elif re.match(r"^выдан[аоы]?\s+студенческ[аяое]{2}\s+справк[аиу]\s*:", line, re.IGNORECASE):
-                cert_text = re.sub(r"^выдан[аоы]?\s+студенческ[аяое]{2}\s+справк[аиу]\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+            # Форматы: "Выдана студенческая справка:", "Выдать студенческая справка:",
+            #          "Студенческая справка:", и т.д.
+            elif re.match(r"^(?:выда\w+\s+)?студенческ\w+\s+справк\w*\s*:", line, re.IGNORECASE):
+                cert_text = re.sub(r"^(?:выда\w+\s+)?студенческ\w+\s+справк\w*\s*:\s*", "", line, flags=re.IGNORECASE).strip()
                 data["student_certificate"] = cert_text
                 data["is_student"] = True
                 data["eln_refused"] = True  # Студ. справка = без ЭЛН для email-роутинга
