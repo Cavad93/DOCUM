@@ -1064,9 +1064,10 @@ class MedicalBot:
             await message.reply_text("📄 Создаю документ...")
             temp_filepath = self._create_docx_file(template_content, patient_data, user_context.clinic)
 
-            # Формируем имя файла для отправки
+            # Формируем имя файла для отправки (дата осмотра, а не дата создания файла)
             safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in patient_data.full_name)
-            filename = f"{safe_name}_осмотр_{datetime.now().strftime('%d.%m.%Y')}.docx"
+            exam_date_str = patient_data.examination_date or datetime.now().strftime('%d.%m.%Y')
+            filename = f"{safe_name}_осмотр_{exam_date_str}.docx"
 
             # Отправляем файл
             with open(temp_filepath, 'rb') as doc_file:
@@ -1132,9 +1133,10 @@ class MedicalBot:
                 user_context.clinic
             )
 
-            # Формируем имя файла для отправки
+            # Формируем имя файла для отправки (дата осмотра, а не дата создания файла)
             safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in user_context.current_template.patient_data.full_name)
-            filename = f"{safe_name}_осмотр_исправлен_{datetime.now().strftime('%d.%m.%Y')}.docx"
+            exam_date_str = user_context.current_template.patient_data.examination_date or datetime.now().strftime('%d.%m.%Y')
+            filename = f"{safe_name}_осмотр_исправлен_{exam_date_str}.docx"
 
             # Отправляем файл
             with open(temp_filepath, 'rb') as doc_file:
@@ -1196,9 +1198,10 @@ class MedicalBot:
                 user_context.clinic
             )
 
-            # Формируем имя файла для отправки
+            # Формируем имя файла для отправки (дата осмотра, а не дата создания файла)
             safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in template.patient_data.full_name)
-            filename = f"{safe_name}_ГОТОВЫЙ_ОСМОТР_{datetime.now().strftime('%d.%m.%Y')}.docx"
+            exam_date_str = template.patient_data.examination_date or datetime.now().strftime('%d.%m.%Y')
+            filename = f"{safe_name}_ГОТОВЫЙ_ОСМОТР_{exam_date_str}.docx"
 
             # Отправляем готовый документ
             with open(temp_filepath, 'rb') as doc_file:
@@ -1330,26 +1333,43 @@ class MedicalBot:
                     data["sick_leave_days"] = None
                     print(f"✓ ЭЛН отказ распознан")
                 else:
-                    # Пытаемся извлечь срок из формата "ДД.ММ.ГГГГ по ДД.ММ.ГГГГ" или "срок с ДД.ММ по ДД.ММ"
-                    # Сначала пробуем с полными годами
-                    date_range_match = re.search(r"(\d{2}\.\d{2}\.\d{4})\s+по\s+(\d{2}\.\d{2}\.\d{4})", eln_text)
-                    if not date_range_match:
-                        # Пробуем формат "срок с ДД.ММ по ДД.ММ"
-                        date_range_match = re.search(r"срок\s+с\s+(\d{2}\.\d{2}).*?по\s+(\d{2}\.\d{2})", eln_text)
+                    # Пытаемся извлечь срок из различных форматов дат:
+                    # "с ДД.ММ по ДД.ММ.ГГГГ", "ДД.ММ.ГГГГ по ДД.ММ.ГГГГ",
+                    # "срок с ДД.ММ по ДД.ММ", "с ДД.ММ по ДД.ММ" и т.д.
+                    # Универсальный паттерн: опциональные "срок"/"с", дата (ДД.ММ или ДД.ММ.ГГГГ), "по"/-", дата
+                    date_range_match = re.search(
+                        r"(?:срок\s+)?(?:с\s+)?(\d{1,2}\.\d{2}(?:\.\d{4})?)\s*(?:по|-)\s*(\d{1,2}\.\d{2}(?:\.\d{4})?)",
+                        eln_text
+                    )
                     if date_range_match:
                         from datetime import datetime
                         try:
                             start_str = date_range_match.group(1)
                             end_str = date_range_match.group(2)
 
-                            # Парсим даты с учетом наличия года
-                            if len(start_str.split('.')) == 3:  # Полная дата с годом
-                                start_date = datetime.strptime(start_str, "%d.%m.%Y")
-                                end_date = datetime.strptime(end_str, "%d.%m.%Y")
-                            else:  # Только день и месяц
-                                current_year = datetime.now().year
-                                start_date = datetime.strptime(f"{start_str}.{current_year}", "%d.%m.%Y")
-                                end_date = datetime.strptime(f"{end_str}.{current_year}", "%d.%m.%Y")
+                            start_parts = start_str.split('.')
+                            end_parts = end_str.split('.')
+
+                            # Определяем год: берём из той даты, где он указан, или текущий
+                            if len(end_parts) == 3:
+                                year = end_parts[2]
+                            elif len(start_parts) == 3:
+                                year = start_parts[2]
+                            else:
+                                year = str(datetime.now().year)
+
+                            # Формируем полные даты с годом
+                            if len(start_parts) == 2:
+                                start_str_full = f"{start_str}.{year}"
+                            else:
+                                start_str_full = start_str
+                            if len(end_parts) == 2:
+                                end_str_full = f"{end_str}.{year}"
+                            else:
+                                end_str_full = end_str
+
+                            start_date = datetime.strptime(start_str_full, "%d.%m.%Y")
+                            end_date = datetime.strptime(end_str_full, "%d.%m.%Y")
 
                             days_value = (end_date - start_date).days + 1  # Включительно
                             data["sick_leave_days"] = days_value
