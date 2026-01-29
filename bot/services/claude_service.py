@@ -389,6 +389,28 @@ class ClaudeService:
         Returns:
             Текст инструкций для Claude AI
         """
+        # Студенческая справка (вместо ЭЛН)
+        if patient_data.student_certificate:
+            cert_text = patient_data.student_certificate
+            follow_up = patient_data.student_cert_end_date or "по необходимости"
+            workplace_label = "Место учёбы"
+            position_label = "Курс"
+            workplace_val = patient_data.workplace or "- (прочерк)"
+            position_val = patient_data.position or "- (прочерк)"
+
+            return f"""ВЫДАНА СТУДЕНЧЕСКАЯ СПРАВКА (НЕ ЭЛН!):
+- Напишите ТОЧНО: "Нетрудоспособна, выдана студенческая справка: {cert_text}"
+- Напишите ТОЧНО: "Явка к врачу: {follow_up}"
+- НЕ пишите про ЭЛН! Это СТУДЕНЧЕСКАЯ СПРАВКА, а не электронный лист нетрудоспособности!
+- НЕ пишите "Режим: домашний" если это не указано в шаблоне
+
+КРИТИЧЕСКИ ВАЖНО - СТРАХОВОЙ АНАМНЕЗ (СТУДЕНТ):
+В разделе "Страховой анамнез" ОБЯЗАТЕЛЬНО замените:
+  - "Место работы" → "{workplace_label}: {workplace_val}"
+  - "Должность" → "{position_label}: {position_val}"
+  - Листы нетрудоспособности за последние 11 месяцев: не было.
+НЕ КОПИРУЙТЕ место работы и должность из шаблона! Пациент — студент!"""
+
         if patient_data.eln_refused:
             # Формируем инструкции по страховому анамнезу при отказе от ЭЛН
             if patient_data.workplace:
@@ -494,10 +516,17 @@ class ClaudeService:
                 illness_dt = exam_dt - timedelta(days=1)
                 illness_date = illness_dt.strftime("%d.%m.%Y")
 
-            # Рассчитываем период ЭЛН (если не отказ)
-            print(f"🔍 DEBUG: eln_refused={patient_data.eln_refused}, sick_leave_days={patient_data.sick_leave_days}")
+            # Рассчитываем период ЭЛН / студенческую справку
+            print(f"🔍 DEBUG: eln_refused={patient_data.eln_refused}, sick_leave_days={patient_data.sick_leave_days}, student_cert={patient_data.student_certificate}")
 
-            if patient_data.eln_refused:
+            if patient_data.student_certificate:
+                # Студенческая справка (вместо ЭЛН)
+                cert_text = patient_data.student_certificate
+                follow_up = patient_data.student_cert_end_date or "по необходимости"
+                print(f"✓ Студенческая справка: {cert_text}, явка: {follow_up}")
+                eln_line = f"- Студенческая справка: {cert_text}\n"
+                follow_up_line = f"- Дата явки к врачу: {follow_up}\n"
+            elif patient_data.eln_refused:
                 # Отказ от ЭЛН
                 print(f"✓ Пациент отказался от ЭЛН")
                 eln_line = "- ЭЛН: ОТКАЗ (пациент отказался от электронного листа нетрудоспособности)\n"
@@ -536,8 +565,13 @@ class ClaudeService:
                     follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
 
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
-            workplace_line = f"- Место работы: {patient_data.workplace}\n" if patient_data.workplace else ""
-            position_line = f"- Должность: {patient_data.position}\n" if patient_data.position else ""
+            # Для студентов используем "Место учёбы" / "Курс" вместо "Место работы" / "Должность"
+            if patient_data.is_student:
+                workplace_line = f"- Место учёбы: {patient_data.workplace}\n" if patient_data.workplace else ""
+                position_line = f"- Курс: {patient_data.position}\n" if patient_data.position else ""
+            else:
+                workplace_line = f"- Место работы: {patient_data.workplace}\n" if patient_data.workplace else ""
+                position_line = f"- Должность: {patient_data.position}\n" if patient_data.position else ""
             illness_line = f"- Дата начала болезни (когда пациент заболел): {illness_date}\n"
             call_line = f"- Дата вызова врача на дом: {call_date}\n"
             exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
@@ -568,9 +602,9 @@ class ClaudeService:
 ИНСТРУКЦИИ ПО СТРУКТУРЕ И ОФОРМЛЕНИЮ:
 1. СОХРАНИТЕ структуру всех разделов (Анамнез заболевания, Жалобы, Объективно и т.д.)
 2. Заполните все разделы шаблона реалистичными медицинскими данными
-3. Вставьте данные пациента (ФИО, дата рождения, СНИЛС{", место работы, должность" if patient_data.workplace or patient_data.position else ""}) в соответствующие места
-4. {"КРИТИЧЕСКИ ВАЖНО: Место работы ОБЯЗАТЕЛЬНО указать как: " + patient_data.workplace if patient_data.workplace else "НЕ КОПИРУЙТЕ место работы из шаблона! Место работы не указано пользователем — поставьте прочерк: -"}
-5. {"КРИТИЧЕСКИ ВАЖНО: Должность ОБЯЗАТЕЛЬНО указать как: " + patient_data.position if patient_data.position else "НЕ КОПИРУЙТЕ должность из шаблона! Должность не указана пользователем — поставьте прочерк: -"}
+3. Вставьте данные пациента (ФИО, дата рождения, СНИЛС{", место учёбы, курс" if patient_data.is_student else (", место работы, должность" if patient_data.workplace or patient_data.position else "")}) в соответствующие места
+4. {"КРИТИЧЕСКИ ВАЖНО: В шаблоне замените 'Место работы' на 'Место учёбы: " + patient_data.workplace + "'" if patient_data.is_student and patient_data.workplace else ("КРИТИЧЕСКИ ВАЖНО: Место работы ОБЯЗАТЕЛЬНО указать как: " + patient_data.workplace if patient_data.workplace else "НЕ КОПИРУЙТЕ место работы из шаблона! Место работы не указано пользователем — поставьте прочерк: -")}
+5. {"КРИТИЧЕСКИ ВАЖНО: В шаблоне замените 'Должность' на 'Курс: " + patient_data.position + "'" if patient_data.is_student and patient_data.position else ("КРИТИЧЕСКИ ВАЖНО: Должность ОБЯЗАТЕЛЬНО указать как: " + patient_data.position if patient_data.position else "НЕ КОПИРУЙТЕ должность из шаблона! Должность не указана пользователем — поставьте прочерк: -")}
 6. Заполните разделы с учетом указанного диагноза: {patient_data.diagnosis}
 7. НЕ добавляйте лишний текст до или после шаблона
 8. Верните ТОЛЬКО заполненный шаблон
@@ -696,8 +730,14 @@ class ClaudeService:
                 illness_dt = exam_dt - timedelta(days=1)
                 illness_date = illness_dt.strftime("%d.%m.%Y")
 
-            # Рассчитываем период ЭЛН (если не отказ)
-            if patient_data.eln_refused:
+            # Рассчитываем период ЭЛН / студенческую справку
+            if patient_data.student_certificate:
+                # Студенческая справка (вместо ЭЛН)
+                cert_text = patient_data.student_certificate
+                follow_up = patient_data.student_cert_end_date or "по необходимости"
+                eln_line = f"- Студенческая справка: {cert_text}\n"
+                follow_up_line = f"- Дата явки к врачу: {follow_up}\n"
+            elif patient_data.eln_refused:
                 # Отказ от ЭЛН
                 eln_line = "- ЭЛН: ОТКАЗ (пациент отказался от электронного листа нетрудоспособности)\n"
                 follow_up_line = "- Дата явки к врачу: по необходимости\n"
@@ -728,8 +768,13 @@ class ClaudeService:
                     follow_up_line = f"- Дата явки к врачу: {follow_up_date}\n"
 
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
-            workplace_line = f"- Место работы: {patient_data.workplace}\n" if patient_data.workplace else ""
-            position_line = f"- Должность: {patient_data.position}\n" if patient_data.position else ""
+            # Для студентов используем "Место учёбы" / "Курс"
+            if patient_data.is_student:
+                workplace_line = f"- Место учёбы: {patient_data.workplace}\n" if patient_data.workplace else ""
+                position_line = f"- Курс: {patient_data.position}\n" if patient_data.position else ""
+            else:
+                workplace_line = f"- Место работы: {patient_data.workplace}\n" if patient_data.workplace else ""
+                position_line = f"- Должность: {patient_data.position}\n" if patient_data.position else ""
             illness_line = f"- Дата начала болезни (когда пациент заболел): {illness_date}\n"
             call_line = f"- Дата вызова врача на дом: {call_date}\n"
             exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
@@ -753,8 +798,8 @@ class ClaudeService:
 ИНСТРУКЦИИ:
 1. Внимательно прочитайте комментарии пользователя
 2. Внесите необходимые исправления в шаблон
-3. {"КРИТИЧЕСКИ ВАЖНО: Место работы ОБЯЗАТЕЛЬНО указать как: " + patient_data.workplace if patient_data.workplace else "НЕ КОПИРУЙТЕ место работы из шаблона! Место работы не указано пользователем — поставьте прочерк: -"}
-4. {"КРИТИЧЕСКИ ВАЖНО: Должность ОБЯЗАТЕЛЬНО указать как: " + patient_data.position if patient_data.position else "НЕ КОПИРУЙТЕ должность из шаблона! Должность не указана пользователем — поставьте прочерк: -"}
+3. {"КРИТИЧЕСКИ ВАЖНО: В шаблоне замените 'Место работы' на 'Место учёбы: " + patient_data.workplace + "'" if patient_data.is_student and patient_data.workplace else ("КРИТИЧЕСКИ ВАЖНО: Место работы ОБЯЗАТЕЛЬНО указать как: " + patient_data.workplace if patient_data.workplace else "НЕ КОПИРУЙТЕ место работы из шаблона! Место работы не указано пользователем — поставьте прочерк: -")}
+4. {"КРИТИЧЕСКИ ВАЖНО: В шаблоне замените 'Должность' на 'Курс: " + patient_data.position + "'" if patient_data.is_student and patient_data.position else ("КРИТИЧЕСКИ ВАЖНО: Должность ОБЯЗАТЕЛЬНО указать как: " + patient_data.position if patient_data.position else "НЕ КОПИРУЙТЕ должность из шаблона! Должность не указана пользователем — поставьте прочерк: -")}
 5. СОХРАНИТЕ актуальные даты:
    - Дата осмотра/консультации: {exam_date}
    - Начало болезни (считает себя больным с...): {illness_date}

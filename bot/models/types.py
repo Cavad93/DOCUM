@@ -30,10 +30,13 @@ class PatientData:
     illness_start_date: Optional[str] = None  # Дата начала болезни
     sick_leave_days: Optional[int] = None  # Количество дней ЭЛН (электронный лист нетрудоспособности)
     eln_refused: bool = False  # Отказ от ЭЛН (если True, то не указываем период ЭЛН)
-    workplace: Optional[str] = None  # Место работы
-    position: Optional[str] = None  # Должность
+    workplace: Optional[str] = None  # Место работы (или место учёбы для студентов)
+    position: Optional[str] = None  # Должность (или курс для студентов)
     eln_start_date: Optional[str] = None  # Дата начала ЭЛН (если указана конкретно)
     eln_end_date: Optional[str] = None  # Дата окончания ЭЛН (если указана конкретно)
+    is_student: bool = False  # Студент (Место учёбы/Курс вместо Место работы/Должность)
+    student_certificate: Optional[str] = None  # Студенческая справка (например: "129/2025 с 18.12.2025 по 22.12.2025")
+    student_cert_end_date: Optional[str] = None  # Дата окончания студенческой справки (для явки к врачу)
 
 
 @dataclass

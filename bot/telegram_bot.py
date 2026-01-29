@@ -1312,13 +1312,55 @@ class MedicalBot:
                 data["snils"] = re.sub(r"^снилс\s*:\s*", "", line, flags=re.IGNORECASE).strip()
             elif re.match(r"^диагноз\s*:", line, re.IGNORECASE):
                 data["diagnosis"] = re.sub(r"^диагноз\s*:\s*", "", line, flags=re.IGNORECASE).strip()
-            # Новые поля для работы
+            # Поля для работы / учёбы
             elif re.match(r"^место работы\s*:", line, re.IGNORECASE):
                 data["workplace"] = re.sub(r"^место работы\s*:\s*", "", line, flags=re.IGNORECASE).strip()
                 print(f"✓ Место работы: {data['workplace']}")
+            elif re.match(r"^место уч[её]бы\s*:", line, re.IGNORECASE):
+                data["workplace"] = re.sub(r"^место уч[её]бы\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+                data["is_student"] = True
+                print(f"✓ Место учёбы (студент): {data['workplace']}")
             elif re.match(r"^должность\s*:", line, re.IGNORECASE):
                 data["position"] = re.sub(r"^должность\s*:\s*", "", line, flags=re.IGNORECASE).strip()
                 print(f"✓ Должность: {data['position']}")
+            elif re.match(r"^курс\s*:", line, re.IGNORECASE):
+                data["position"] = re.sub(r"^курс\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+                data["is_student"] = True
+                print(f"✓ Курс (студент): {data['position']}")
+            # Студенческая справка (вместо ЭЛН)
+            elif re.match(r"^выдан[аоы]?\s+студенческ[аяое]{2}\s+справк[аиу]\s*:", line, re.IGNORECASE):
+                cert_text = re.sub(r"^выдан[аоы]?\s+студенческ[аяое]{2}\s+справк[аиу]\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+                data["student_certificate"] = cert_text
+                data["is_student"] = True
+                data["eln_refused"] = True  # Студ. справка = без ЭЛН для email-роутинга
+                print(f"✓ Студенческая справка: {cert_text}")
+                # Извлекаем конечную дату из справки для явки к врачу
+                from datetime import datetime as _dt
+                date_match = re.search(
+                    r"(?:с\s+)?(\d{1,2}\.\d{2}(?:\.\d{4})?)\s*(?:по|-)\s*(\d{1,2}\.\d{2}(?:\.\d{4})?)",
+                    cert_text
+                )
+                if date_match:
+                    try:
+                        end_str = date_match.group(2)
+                        end_parts = end_str.split('.')
+                        start_str = date_match.group(1)
+                        start_parts = start_str.split('.')
+                        if len(end_parts) == 3:
+                            year = end_parts[2]
+                        elif len(start_parts) == 3:
+                            year = start_parts[2]
+                        else:
+                            year = str(_dt.now().year)
+                        if len(end_parts) == 2:
+                            end_full = f"{end_str}.{year}"
+                        else:
+                            end_full = end_str
+                        end_date = _dt.strptime(end_full, "%d.%m.%Y")
+                        data["student_cert_end_date"] = end_date.strftime("%d.%m.%Y")
+                        print(f"✓ Дата окончания справки (явка): {data['student_cert_end_date']}")
+                    except Exception as e:
+                        print(f"⚠️ Ошибка парсинга даты справки: {e}")
             # Новые поля для дат
             elif re.match(r"^дата осмотра\s*:", line, re.IGNORECASE):
                 data["examination_date"] = re.sub(r"^дата осмотра\s*:\s*", "", line, flags=re.IGNORECASE).strip()
