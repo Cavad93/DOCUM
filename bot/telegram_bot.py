@@ -785,8 +785,9 @@ class MedicalBot:
             await query.message.reply_text("✅ Выбрана клиника \"ПСКП\"")
 
         elif data == "confirm_template":
-            await self._save_template(query.message, user_context)
-            await query.message.reply_text("✓ Шаблон сохранен!")
+            success = await self._save_template(query.message, user_context)
+            if success:
+                await query.message.reply_text("✓ Шаблон сохранен!")
 
         elif data == "request_corrections":
             user_context.state = BotState.AWAITING_CORRECTIONS
@@ -1159,11 +1160,11 @@ class MedicalBot:
                 except Exception as e:
                     print(f"Ошибка удаления временного файла: {e}")
 
-    async def _save_template(self, message, user_context: BotContext):
-        """Сохранение шаблона в архив"""
+    async def _save_template(self, message, user_context: BotContext) -> bool:
+        """Сохранение шаблона в архив. Возвращает True при успехе."""
         if not user_context.current_template:
             await message.reply_text("❌ Нет шаблона для сохранения")
-            return
+            return False
 
         temp_filepath = None
         try:
@@ -1235,14 +1236,14 @@ class MedicalBot:
                         reply_markup=reply_markup
                     )
                     # НЕ удаляем temp_filepath - он нужен для отправки email
-                    return
+                    return True
                 else:
                     # Для ПСКП добавляем документ в очередь для пакетной отправки
                     examination_date = template.patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
                     has_eln = not template.patient_data.eln_refused
 
                     # Добавляем документ в постоянную очередь
-                    user_id = update.effective_user.id
+                    user_id = message.chat.id
                     success = self.document_queue_service.add_document(
                         user_id=user_id,
                         clinic=user_context.clinic.value,
@@ -1279,10 +1280,12 @@ class MedicalBot:
             user_context.current_template = None
             user_context.patient_data = None
             user_context.corrections_count = 0  # Сбрасываем счетчик правок
+            return True
 
         except Exception as e:
             print(f"Ошибка сохранения шаблона: {e}")
             await message.reply_text("❌ Ошибка сохранения шаблона")
+            return False
         finally:
             # Удаляем временный файл только если НЕ ждем фото
             # (если ждем фото, файл будет удален после отправки email)
