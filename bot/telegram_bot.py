@@ -1189,6 +1189,18 @@ class MedicalBot:
                 clinic=user_context.clinic,
             )
 
+            # Предупреждаем если AI вернул документ без изменений
+            original = user_context.current_template.content
+            if corrected_template.strip() == original.strip():
+                await message.reply_text(
+                    "⚠️ Документ не изменился — ИИ не применил правки.\n"
+                    "Попробуйте сформулировать точнее, например:\n"
+                    "«В раздел Сопутствующие заболевания добавить: ревматоидный артрит»"
+                )
+                user_context.state = BotState.AWAITING_CORRECTIONS
+                user_context.corrections_count = max(0, user_context.corrections_count - 1)
+                return
+
             # Создаем .docx файл из исправленного шаблона
             await message.reply_text("📄 Создаю исправленный документ...")
             temp_filepath = self._create_docx_file(
