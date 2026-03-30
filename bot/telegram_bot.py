@@ -1460,10 +1460,10 @@ class MedicalBot:
                 data["examination_date"] = re.sub(r"^дата осмотра\s*:\s*", "", line, flags=re.IGNORECASE).strip()
             elif re.match(r"^начало болезни\s*:", line, re.IGNORECASE):
                 data["illness_start_date"] = re.sub(r"^начало болезни\s*:\s*", "", line, flags=re.IGNORECASE).strip()
-            elif re.match(r"^элн\s*:", line, re.IGNORECASE):
-                # Парсим "ЭЛН: 5 дней" или "ЭЛН: 5" или "ЭЛН: отказ"
-                # или "ЭЛН: 910317368797 срок с 26.12 по 30.12.2025"
-                eln_text = re.sub(r"^элн\s*:\s*", "", line, flags=re.IGNORECASE).strip().lower()
+            elif re.match(r"^элн\b", line, re.IGNORECASE):
+                # Парсим "ЭЛН: 5 дней" / "ЭЛН: отказ" / "ЭЛН открыт с 26.03 по 31.03.2026"
+                # Убираем "ЭЛН" + необязательные двоеточие/слово-связку
+                eln_text = re.sub(r"^элн\s*(?:открыт\s*)?:?\s*", "", line, flags=re.IGNORECASE).strip().lower()
                 print(f"🔍 Парсинг ЭЛН: '{line}' -> '{eln_text}'")
 
                 # Проверяем на отказ
