@@ -80,6 +80,14 @@ class ArchiveService:
                     "examination_date": template.patient_data.examination_date,
                     "illness_start_date": template.patient_data.illness_start_date,
                     "sick_leave_days": template.patient_data.sick_leave_days,
+                    "eln_refused": template.patient_data.eln_refused,
+                    "eln_start_date": template.patient_data.eln_start_date,
+                    "eln_end_date": template.patient_data.eln_end_date,
+                    "workplace": template.patient_data.workplace,
+                    "position": template.patient_data.position,
+                    "is_student": template.patient_data.is_student,
+                    "student_certificate": template.patient_data.student_certificate,
+                    "student_cert_end_date": template.patient_data.student_cert_end_date,
                 },
                 "created_at": template.created_at.isoformat(),
                 "docx_file": base_filename,
@@ -114,7 +122,15 @@ class ArchiveService:
             for meta_filepath in self.archive_path.glob("**/*.meta.json"):
                 try:
                     # Читаем метаданные
-                    metadata = json.loads(meta_filepath.read_text(encoding="utf-8"))
+                    try:
+                        metadata = json.loads(meta_filepath.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError) as json_err:
+                        print(f"⚠️ Повреждён файл метаданных {meta_filepath}: {json_err}")
+                        continue
+
+                    if "patient_data" not in metadata:
+                        print(f"⚠️ Отсутствует patient_data в {meta_filepath}, пропускаем")
+                        continue
 
                     # Проверка совпадения параметров
                     matches = True
@@ -141,17 +157,26 @@ class ArchiveService:
                         content = self._read_docx_content(docx_filepath)
 
                         # Создаем объект шаблона
+                        pd = metadata["patient_data"]
                         template = ExaminationTemplate(
                             id=metadata["id"],
                             clinic=ClinicMode(metadata["clinic"]),
                             patient_data=PatientData(
-                                full_name=metadata["patient_data"]["full_name"],
-                                birth_date=metadata["patient_data"]["birth_date"],
-                                diagnosis=metadata["patient_data"]["diagnosis"],
-                                snils=metadata["patient_data"].get("snils"),
-                                examination_date=metadata["patient_data"].get("examination_date"),
-                                illness_start_date=metadata["patient_data"].get("illness_start_date"),
-                                sick_leave_days=metadata["patient_data"].get("sick_leave_days"),
+                                full_name=pd["full_name"],
+                                birth_date=pd["birth_date"],
+                                diagnosis=pd["diagnosis"],
+                                snils=pd.get("snils"),
+                                examination_date=pd.get("examination_date"),
+                                illness_start_date=pd.get("illness_start_date"),
+                                sick_leave_days=pd.get("sick_leave_days"),
+                                eln_refused=pd.get("eln_refused", False),
+                                eln_start_date=pd.get("eln_start_date"),
+                                eln_end_date=pd.get("eln_end_date"),
+                                workplace=pd.get("workplace"),
+                                position=pd.get("position"),
+                                is_student=pd.get("is_student", False),
+                                student_certificate=pd.get("student_certificate"),
+                                student_cert_end_date=pd.get("student_cert_end_date"),
                             ),
                             content=content,
                             created_at=datetime.fromisoformat(metadata["created_at"]),
@@ -241,7 +266,14 @@ class ArchiveService:
             for meta_filepath in self.archive_path.glob(f"{clinic.value}/**/*.meta.json"):
                 try:
                     # Читаем метаданные
-                    metadata = json.loads(meta_filepath.read_text(encoding="utf-8"))
+                    try:
+                        metadata = json.loads(meta_filepath.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, UnicodeDecodeError) as json_err:
+                        print(f"⚠️ Повреждён файл метаданных {meta_filepath}: {json_err}")
+                        continue
+
+                    if "patient_data" not in metadata or "diagnosis" not in metadata.get("patient_data", {}):
+                        continue
 
                     # Получаем диагноз из архивного шаблона
                     archived_diagnosis = metadata["patient_data"]["diagnosis"].lower().strip()

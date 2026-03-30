@@ -379,6 +379,48 @@ class ClaudeService:
             print(f"Ошибка выбора шаблона: {e}")
             return None
 
+    def _sanitize(self, value: str, max_len: int = 300) -> str:
+        """Удаляет управляющие символы и обрезает строку до max_len перед вставкой в промпт."""
+        if not value:
+            return value
+        # Убираем управляющие символы кроме обычного пробела и переноса строки
+        cleaned = "".join(ch for ch in value if ch == "\n" or (" " <= ch < "\x7f"))
+        return cleaned[:max_len]
+
+    def _get_workplace_instruction(self, patient_data: PatientData) -> str:
+        """Возвращает инструкцию для AI по полю 'Место работы / Место учёбы'."""
+        workplace = (patient_data.workplace or "").strip() or None
+        if patient_data.is_student and workplace:
+            return (
+                f"КРИТИЧЕСКИ ВАЖНО (СТУДЕНТ): замените поле 'Место работы' на "
+                f"'Место учёбы: {workplace}'. НЕ оставляйте 'Место работы' в документе!"
+            )
+        if patient_data.is_student:
+            return (
+                "КРИТИЧЕСКИ ВАЖНО (СТУДЕНТ): замените поле 'Место работы' на "
+                "'Место учёбы: -'. НЕ оставляйте 'Место работы' в документе!"
+            )
+        if workplace:
+            return f"КРИТИЧЕСКИ ВАЖНО: в поле 'Место работы' поставьте ТОЧНО: {workplace}. Не берите из шаблона!"
+        return "КРИТИЧЕСКИ ВАЖНО: место работы НЕ указано — поставьте прочерк: -. НЕ КОПИРУЙТЕ из шаблона!"
+
+    def _get_position_instruction(self, patient_data: PatientData) -> str:
+        """Возвращает инструкцию для AI по полю 'Должность / Курс'."""
+        position = (patient_data.position or "").strip() or None
+        if patient_data.is_student and position:
+            return (
+                f"КРИТИЧЕСКИ ВАЖНО (СТУДЕНТ): замените поле 'Должность' на "
+                f"'Курс: {position}'. НЕ оставляйте 'Должность' в документе!"
+            )
+        if patient_data.is_student:
+            return (
+                "КРИТИЧЕСКИ ВАЖНО (СТУДЕНТ): замените поле 'Должность' на "
+                "'Курс: -'. НЕ оставляйте 'Должность' в документе!"
+            )
+        if position:
+            return f"КРИТИЧЕСКИ ВАЖНО: в поле 'Должность' поставьте ТОЧНО: {position}. Не берите из шаблона!"
+        return "КРИТИЧЕСКИ ВАЖНО: должность НЕ указана — поставьте прочерк: -. НЕ КОПИРУЙТЕ из шаблона!"
+
     def _get_eln_instructions(self, patient_data: PatientData) -> str:
         """
         Генерирует инструкции по ЭЛН в зависимости от того, отказ или нет
@@ -580,12 +622,13 @@ class ClaudeService:
             call_line = f"- Дата вызова врача на дом: {call_date}\n"
             exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
 
+            s = self._sanitize
             prompt = f"""Вы медицинский ассистент. Ваша задача - заполнить готовый шаблон медицинского осмотра.
 
 ДАННЫЕ ПАЦИЕНТА:
-- ФИО: {patient_data.full_name}
-- Дата рождения: {patient_data.birth_date}
-{snils_line}{workplace_line}{position_line}- Диагноз: {patient_data.diagnosis}
+- ФИО: {s(patient_data.full_name)}
+- Дата рождения: {s(patient_data.birth_date)}
+{snils_line}{workplace_line}{position_line}- Диагноз: {s(patient_data.diagnosis)}
 
 ВАЖНЫЕ ДАТЫ:
 {illness_line}{call_line}{exam_date_line}{eln_line}{follow_up_line}
@@ -607,8 +650,8 @@ class ClaudeService:
 1. СОХРАНИТЕ структуру всех разделов (Анамнез заболевания, Жалобы, Объективно и т.д.)
 2. Заполните все разделы шаблона реалистичными медицинскими данными
 3. Вставьте данные пациента (ФИО, дата рождения, СНИЛС{", место учёбы, курс" if patient_data.is_student else (", место работы, должность" if patient_data.workplace or patient_data.position else "")}) в соответствующие места
-4. {("КРИТИЧЕСКИ ВАЖНО (СТУДЕНТ): замените поле 'Место работы' на 'Место учёбы: " + patient_data.workplace + "'. НЕ оставляйте 'Место работы' в документе!") if patient_data.is_student and patient_data.workplace else (("КРИТИЧЕСКИ ВАЖНО: в поле 'Место работы' поставьте ТОЧНО: " + patient_data.workplace + ". Не берите это поле из шаблона!") if patient_data.workplace else "КРИТИЧЕСКИ ВАЖНО: место работы НЕ указано — поставьте прочерк: -. НЕ КОПИРУЙТЕ из шаблона!")}
-5. {("КРИТИЧЕСКИ ВАЖНО (СТУДЕНТ): замените поле 'Должность' на 'Курс: " + patient_data.position + "'. НЕ оставляйте 'Должность' в документе!") if patient_data.is_student and patient_data.position else (("КРИТИЧЕСКИ ВАЖНО: в поле 'Должность' поставьте ТОЧНО: " + patient_data.position + ". Не берите из шаблона!") if patient_data.position else "КРИТИЧЕСКИ ВАЖНО: должность НЕ указана — поставьте прочерк: -. НЕ КОПИРУЙТЕ из шаблона!")}
+4. {self._get_workplace_instruction(patient_data)}
+5. {self._get_position_instruction(patient_data)}
 6. Заполните разделы с учетом указанного диагноза: {patient_data.diagnosis}
 7. НЕ добавляйте лишний текст до или после шаблона
 8. Верните ТОЛЬКО заполненный шаблон
@@ -788,27 +831,28 @@ class ClaudeService:
             call_line = f"- Дата вызова врача на дом: {call_date}\n"
             exam_date_line = f"- Дата осмотра/консультации: {exam_date}\n"
 
+            s = self._sanitize
             prompt = f"""Вы медицинский ассистент. У вас есть готовый шаблон медицинского осмотра, который нужно исправить.
 
 ТЕКУЩИЙ ШАБЛОН:
 {current_template}
 
 ДАННЫЕ ПАЦИЕНТА:
-- ФИО: {patient_data.full_name}
-- Дата рождения: {patient_data.birth_date}
-{snils_line}{workplace_line}{position_line}- Диагноз: {patient_data.diagnosis}
+- ФИО: {s(patient_data.full_name)}
+- Дата рождения: {s(patient_data.birth_date)}
+{snils_line}{workplace_line}{position_line}- Диагноз: {s(patient_data.diagnosis)}
 
 ВАЖНЫЕ ДАТЫ:
 {illness_line}{call_line}{exam_date_line}{eln_line}{follow_up_line}
 
 КОММЕНТАРИИ ДЛЯ ИСПРАВЛЕНИЯ:
-{corrections}
+{s(corrections, max_len=1000)}
 
 ИНСТРУКЦИИ:
 1. Внимательно прочитайте комментарии пользователя
 2. Внесите необходимые исправления в шаблон
-3. {("КРИТИЧЕСКИ ВАЖНО (СТУДЕНТ): замените поле 'Место работы' на 'Место учёбы: " + patient_data.workplace + "'. НЕ оставляйте 'Место работы' в документе!") if patient_data.is_student and patient_data.workplace else (("КРИТИЧЕСКИ ВАЖНО: в поле 'Место работы' поставьте ТОЧНО: " + patient_data.workplace + ". Не берите это поле из шаблона!") if patient_data.workplace else "КРИТИЧЕСКИ ВАЖНО: место работы НЕ указано — поставьте прочерк: -. НЕ КОПИРУЙТЕ из шаблона!")}
-4. {("КРИТИЧЕСКИ ВАЖНО (СТУДЕНТ): замените поле 'Должность' на 'Курс: " + patient_data.position + "'. НЕ оставляйте 'Должность' в документе!") if patient_data.is_student and patient_data.position else (("КРИТИЧЕСКИ ВАЖНО: в поле 'Должность' поставьте ТОЧНО: " + patient_data.position + ". Не берите из шаблона!") if patient_data.position else "КРИТИЧЕСКИ ВАЖНО: должность НЕ указана — поставьте прочерк: -. НЕ КОПИРУЙТЕ из шаблона!")}
+3. {self._get_workplace_instruction(patient_data)}
+4. {self._get_position_instruction(patient_data)}
 5. СОХРАНИТЕ актуальные даты:
    - Дата осмотра/консультации: {exam_date}
    - Начало болезни (считает себя больным с...): {illness_date}

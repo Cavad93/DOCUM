@@ -326,6 +326,15 @@ class MedicalBot:
         # Получаем текущий контекст для проверки состояния
         current_context = self.user_contexts.get(user_id)
 
+        # Удаляем временный файл документа, если он есть
+        if current_context and current_context.saved_document_path:
+            try:
+                doc_path = Path(current_context.saved_document_path)
+                if doc_path.exists():
+                    doc_path.unlink()
+            except Exception as e:
+                print(f"Ошибка удаления файла при отмене: {e}")
+
         # Сбрасываем контекст пользователя
         self.user_contexts[user_id] = BotContext(
             clinic=ClinicMode.DINASTIYA,
@@ -1049,10 +1058,23 @@ class MedicalBot:
             eln_start_date = parsed_data.get("eln_start_date") or user_context.patient_data.get("eln_start_date")
             eln_end_date = parsed_data.get("eln_end_date") or user_context.patient_data.get("eln_end_date")
 
+            # Нормализуем строковые поля — убираем лишние пробелы
+            full_name = full_name.strip()
+            birth_date = birth_date.strip()
+            diagnosis = diagnosis.strip()
+
             # Проверка обязательных полей
             if not full_name or not birth_date or not diagnosis:
+                missing = []
+                if not full_name:
+                    missing.append("ФИО")
+                if not birth_date:
+                    missing.append("дата рождения")
+                if not diagnosis:
+                    missing.append("диагноз")
                 await update.message.reply_text(
-                    "❌ Не хватает данных. Убедитесь, что указаны ФИО, дата рождения и диагноз."
+                    f"❌ Не хватает данных: {', '.join(missing)}.\n"
+                    "Укажите недостающие поля и отправьте повторно."
                 )
                 return
 
@@ -1167,7 +1189,15 @@ class MedicalBot:
                 clinic=user_context.clinic,
             )
 
-            # Обновляем в контексте
+            # Создаем .docx файл из исправленного шаблона
+            await message.reply_text("📄 Создаю исправленный документ...")
+            temp_filepath = self._create_docx_file(
+                corrected_template,
+                user_context.current_template.patient_data,
+                user_context.clinic
+            )
+
+            # Обновляем контент и переводим состояние только после успешного создания файла
             user_context.current_template.content = corrected_template
             user_context.state = BotState.AWAITING_CONFIRMATION
 
@@ -1179,14 +1209,6 @@ class MedicalBot:
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-
-            # Создаем .docx файл из исправленного шаблона
-            await message.reply_text("📄 Создаю исправленный документ...")
-            temp_filepath = self._create_docx_file(
-                corrected_template,
-                user_context.current_template.patient_data,
-                user_context.clinic
-            )
 
             # Формируем имя файла для отправки (дата осмотра, а не дата создания файла)
             safe_name = "".join(c if c.isalnum() or c == ' ' else '_' for c in user_context.current_template.patient_data.full_name)
@@ -1205,7 +1227,9 @@ class MedicalBot:
         except Exception as e:
             print(f"Ошибка исправления шаблона: {e}")
             await message.reply_text("❌ Ошибка исправления шаблона. Попробуйте еще раз.")
-            user_context.state = BotState.AWAITING_CONFIRMATION
+            # Возвращаем в режим правок, чтобы пользователь мог повторить попытку
+            user_context.state = BotState.AWAITING_CORRECTIONS
+            user_context.corrections_count = max(0, user_context.corrections_count - 1)
         finally:
             # Удаляем временный файл
             if temp_filepath and Path(temp_filepath).exists():
@@ -1484,13 +1508,18 @@ class MedicalBot:
                             if len(end_parts) == 2 and len(start_parts) != 3 and end_date < start_date:
                                 end_date = end_date.replace(year=end_date.year + 1)
 
-                            days_value = (end_date - start_date).days + 1  # Включительно
-                            data["sick_leave_days"] = days_value
-                            data["eln_refused"] = False
-                            # Сохраняем точные даты ЭЛН
-                            data["eln_start_date"] = start_date.strftime("%d.%m.%Y")
-                            data["eln_end_date"] = end_date.strftime("%d.%m.%Y")
-                            print(f"✓ ЭЛН срок: с {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')} = {days_value} дней")
+                            # Если конец всё равно раньше начала — ошибка в данных пользователя
+                            if end_date < start_date:
+                                print(f"⚠️ Дата окончания ЭЛН раньше начала")
+                                data["_eln_parse_error"] = True
+                            else:
+                                days_value = (end_date - start_date).days + 1  # Включительно
+                                data["sick_leave_days"] = days_value
+                                data["eln_refused"] = False
+                                # Сохраняем точные даты ЭЛН
+                                data["eln_start_date"] = start_date.strftime("%d.%m.%Y")
+                                data["eln_end_date"] = end_date.strftime("%d.%m.%Y")
+                                print(f"✓ ЭЛН срок: с {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')} = {days_value} дней")
                         except Exception as e:
                             print(f"⚠️ Ошибка парсинга дат ЭЛН: {e}")
                             data["_eln_parse_error"] = True
