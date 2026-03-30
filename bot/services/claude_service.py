@@ -452,9 +452,13 @@ class ClaudeService:
 - Напишите ТОЧНО: "Явка к врачу: {follow_up_date}"
 - НЕ МЕНЯЙТЕ эти даты! Они указаны пользователем!"""
             else:
-                # Рассчитываем даты для обычного ЭЛН
+                # Период ЭЛН берётся ТОЛЬКО из данных пользователя
                 exam_date = patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
-                sick_days = patient_data.sick_leave_days or 3
+                sick_days = patient_data.sick_leave_days
+                if not sick_days:
+                    return """- НЕ указывайте период ЭЛН и дату явки — пользователь не указал срок нетрудоспособности!
+- НЕ придумывайте и НЕ рассчитывайте даты ЭЛН самостоятельно!
+- Оставьте поля ЭЛН и явки к врачу пустыми или с прочерком."""
                 exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
                 eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
                 eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
@@ -548,21 +552,21 @@ class ClaudeService:
                     follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
                     print(f"✓ Используем точные даты ЭЛН: с {eln_start_date} по {eln_end_date}")
                 else:
-                    # Обычный расчёт ЭЛН от даты осмотра
-                    sick_days = patient_data.sick_leave_days or 3  # По умолчанию 3 дня
-                    print(f"🔍 DEBUG: sick_days after 'or 3' = {sick_days}, type={type(sick_days)}")
+                    # Период ЭЛН берётся ТОЛЬКО из данных пользователя
+                    sick_days = patient_data.sick_leave_days
+                    print(f"🔍 DEBUG: sick_days={sick_days}, type={type(sick_days)}")
 
-                    # Валидация sick_days
-                    if not isinstance(sick_days, int) or sick_days <= 0 or sick_days > 365:
-                        print(f"⚠️ ВНИМАНИЕ: Некорректное значение sick_days={sick_days}, использую 3 дня")
-                        sick_days = 3
-
-                    exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
-                    eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
-                    eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
-                    follow_up_date = eln_end_date  # Дата повторного визита - последний день ЭЛН
-                    eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
-                    follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
+                    if not sick_days or not isinstance(sick_days, int) or sick_days <= 0:
+                        print(f"ℹ️ Срок ЭЛН не указан пользователем — не рассчитываем даты")
+                        eln_line = ""
+                        follow_up_line = ""
+                    else:
+                        exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+                        eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
+                        eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
+                        follow_up_date = eln_end_date
+                        eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
+                        follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
 
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
             # Для студентов используем "Место учёбы" / "Курс" вместо "Место работы" / "Должность"
@@ -758,14 +762,19 @@ class ClaudeService:
                     follow_up_line = f"- Дата явки к врачу (повторный прием): {follow_up_date}\n"
                     print(f"✓ Используем точные даты ЭЛН при исправлении: с {eln_start_date} по {eln_end_date}")
                 else:
-                    # Обычный расчёт ЭЛН от даты осмотра
-                    sick_days = patient_data.sick_leave_days or 3
-                    exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
-                    eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
-                    eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
-                    follow_up_date = eln_end_date
-                    eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
-                    follow_up_line = f"- Дата явки к врачу: {follow_up_date}\n"
+                    # Период ЭЛН берётся ТОЛЬКО из данных пользователя
+                    sick_days = patient_data.sick_leave_days
+                    if not sick_days or not isinstance(sick_days, int) or sick_days <= 0:
+                        print(f"ℹ️ Срок ЭЛН не указан пользователем — не рассчитываем даты")
+                        eln_line = ""
+                        follow_up_line = ""
+                    else:
+                        exam_dt = datetime.strptime(exam_date, "%d.%m.%Y")
+                        eln_end_dt = exam_dt + timedelta(days=sick_days - 1)
+                        eln_end_date = eln_end_dt.strftime("%d.%m.%Y")
+                        follow_up_date = eln_end_date
+                        eln_line = f"- Период ЭЛН: с {exam_date} по {eln_end_date} ({sick_days} дней)\n"
+                        follow_up_line = f"- Дата явки к врачу: {follow_up_date}\n"
 
             snils_line = f"- СНИЛС: {patient_data.snils}\n" if patient_data.snils else ""
             # Для студентов используем "Место учёбы" / "Курс"
