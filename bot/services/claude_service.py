@@ -383,8 +383,9 @@ class ClaudeService:
         """Удаляет управляющие символы и обрезает строку до max_len перед вставкой в промпт."""
         if not value:
             return value
-        # Убираем управляющие символы кроме обычного пробела и переноса строки
-        cleaned = "".join(ch for ch in value if ch == "\n" or (" " <= ch < "\x7f"))
+        # Убираем управляющие символы (\x00-\x1f), кроме переноса строки (\n)
+        # Разрешаем все остальные символы: ASCII, кириллицу и прочие Unicode
+        cleaned = "".join(ch for ch in value if ch == "\n" or ord(ch) >= 0x20)
         return cleaned[:max_len]
 
     def _get_workplace_instruction(self, patient_data: PatientData) -> str:
@@ -867,22 +868,32 @@ class ClaudeService:
 - Нумерованные списки: "1. Текст", "2. Текст"
 - "План лечения" и "План обследования" — всегда нумерованные списки"""
 
-            # Задача пользователя — в отдельном user-сообщении
-            user_message = f"""ЗАДАЧА: внеси следующие правки в шаблон осмотра.
-
-ПРАВКИ:
-{s(corrections, max_len=2000)}
-
-Применить ВСЕ правки без исключений. Не возвращай документ без изменений.
-
-ШАБЛОН ДЛЯ ИЗМЕНЕНИЯ:
-{current_template}"""
-
+            # Используем технику assistant prefill:
+            # Шаблон подаётся как сообщение ассистента — Claude «владеет» им
+            # и в следующем ходу вносит правки в свой же текст.
             message = self.client.messages.create(
                 model=self.GENERATION_MODEL,
                 max_tokens=8192,
                 system=system_prompt,
-                messages=[{"role": "user", "content": user_message}],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "Вот шаблон медицинского осмотра, который вы составили:",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": current_template,
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Внеси следующие правки в этот шаблон:\n\n"
+                            f"{s(corrections, max_len=2000)}\n\n"
+                            f"Применить ВСЕ правки без исключений. "
+                            f"Верни ПОЛНЫЙ исправленный шаблон."
+                        ),
+                    },
+                ],
             )
 
             corrected_template = message.content[0].text
