@@ -931,6 +931,15 @@ class MedicalBot:
             # Если это не медицинский документ, пробуем распознать как СНИЛС
             extracted_data = await self.claude_service.extract_data_from_image(image_base64, "image/jpeg")
 
+            # Если ничего не распознано — сообщаем пользователю
+            if not any(extracted_data.get(f) for f in ("full_name", "birth_date", "snils")):
+                await update.message.reply_text(
+                    "⚠️ Не удалось распознать данные с фото.\n"
+                    "Убедитесь, что изображение чёткое и содержит СНИЛС или медицинский документ.\n"
+                    "Попробуйте отправить фото ещё раз или введите данные вручную."
+                )
+                return
+
             # Сохраняем в контекст
             if user_context.patient_data is None:
                 user_context.patient_data = {}
@@ -982,12 +991,50 @@ class MedicalBot:
             if user_context.patient_data is None:
                 user_context.patient_data = {}
 
+            # Если даты студенческой справки некорректны — предупреждаем и останавливаемся
+            if parsed_data.pop("_cert_date_error", False):
+                await update.message.reply_text(
+                    "⚠️ Некорректные даты студенческой справки.\n"
+                    "Укажите в формате: Студенческая справка: 129/2025 с 18.12.2025 по 22.12.2025\n"
+                    "(дата начала должна быть раньше даты окончания)"
+                )
+                return
+
+            # Если дата рождения невалидна — предупреждаем пользователя и останавливаемся
+            bad_bd = parsed_data.pop("_birth_date_error", None)
+            if bad_bd:
+                await update.message.reply_text(
+                    f"⚠️ Неверный формат даты рождения: «{bad_bd}»\n"
+                    "Укажите в формате ДД.ММ.ГГГГ, например: 15.03.1985"
+                )
+                return
+
+            # Если количество дней ЭЛН вне допустимого диапазона — предупреждаем и останавливаемся
+            bad_days = parsed_data.pop("_eln_days_error", None)
+            if bad_days is not None:
+                await update.message.reply_text(
+                    f"⚠️ Недопустимое количество дней ЭЛН: {bad_days}.\n"
+                    "Укажите от 1 до 60 дней или задайте точные даты:\n"
+                    "ЭЛН: с 25.12.2025 по 30.12.2025"
+                )
+                return
+
+            # Если даты ЭЛН не удалось распознать — предупреждаем пользователя и останавливаемся
+            if parsed_data.pop("_eln_parse_error", False):
+                await update.message.reply_text(
+                    "⚠️ Не удалось распознать даты ЭЛН. Укажите в формате:\n"
+                    "ЭЛН: с 25.12.2025 по 30.12.2025\n"
+                    "или\n"
+                    "ЭЛН: 5 дней"
+                )
+                return
+
             # Обновляем контекст новыми данными (для накопления данных между сообщениями)
             user_context.patient_data.update({k: v for k, v in parsed_data.items() if v is not None})
 
             full_name = parsed_data.get("full_name") or user_context.patient_data.get("full_name", "")
             birth_date = parsed_data.get("birth_date") or user_context.patient_data.get("birth_date", "")
-            diagnosis = parsed_data.get("diagnosis", "")
+            diagnosis = parsed_data.get("diagnosis") or user_context.patient_data.get("diagnosis", "")
             snils = parsed_data.get("snils") or user_context.patient_data.get("snils")
 
             # Новые поля для дат
@@ -1009,6 +1056,10 @@ class MedicalBot:
                 )
                 return
 
+            is_student = parsed_data.get("is_student") or user_context.patient_data.get("is_student", False)
+            student_certificate = parsed_data.get("student_certificate") or user_context.patient_data.get("student_certificate")
+            student_cert_end_date = parsed_data.get("student_cert_end_date") or user_context.patient_data.get("student_cert_end_date")
+
             patient_data = PatientData(
                 full_name=full_name,
                 birth_date=birth_date,
@@ -1022,6 +1073,9 @@ class MedicalBot:
                 position=position,
                 eln_start_date=eln_start_date,
                 eln_end_date=eln_end_date,
+                is_student=bool(is_student),
+                student_certificate=student_certificate,
+                student_cert_end_date=student_cert_end_date,
             )
 
             # Генерируем шаблон
@@ -1279,7 +1333,8 @@ class MedicalBot:
             user_context.state = BotState.IDLE
             user_context.current_template = None
             user_context.patient_data = None
-            user_context.corrections_count = 0  # Сбрасываем счетчик правок
+            user_context.corrections_count = 0
+            user_context.examination_photos = None
             return True
 
         except Exception as e:
@@ -1307,7 +1362,13 @@ class MedicalBot:
             if re.match(r"^фио\s*:", line, re.IGNORECASE):
                 data["full_name"] = re.sub(r"^фио\s*:\s*", "", line, flags=re.IGNORECASE).strip()
             elif re.match(r"^дата рождения\s*:", line, re.IGNORECASE):
-                data["birth_date"] = re.sub(r"^дата рождения\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+                raw_bd = re.sub(r"^дата рождения\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+                from datetime import datetime as _dt_bd
+                try:
+                    _dt_bd.strptime(raw_bd, "%d.%m.%Y")
+                    data["birth_date"] = raw_bd
+                except ValueError:
+                    data["_birth_date_error"] = raw_bd
             elif re.match(r"^снилс\s*:", line, re.IGNORECASE):
                 data["snils"] = re.sub(r"^снилс\s*:\s*", "", line, flags=re.IGNORECASE).strip()
             elif re.match(r"^диагноз\s*:", line, re.IGNORECASE):
@@ -1344,25 +1405,32 @@ class MedicalBot:
                 )
                 if date_match:
                     try:
-                        end_str = date_match.group(2)
-                        end_parts = end_str.split('.')
                         start_str = date_match.group(1)
+                        end_str = date_match.group(2)
                         start_parts = start_str.split('.')
+                        end_parts = end_str.split('.')
                         if len(end_parts) == 3:
                             year = end_parts[2]
                         elif len(start_parts) == 3:
                             year = start_parts[2]
                         else:
                             year = str(_dt.now().year)
-                        if len(end_parts) == 2:
-                            end_full = f"{end_str}.{year}"
+                        start_full = start_str if len(start_parts) == 3 else f"{start_str}.{year}"
+                        end_full = end_str if len(end_parts) == 3 else f"{end_str}.{year}"
+                        start_date_cert = _dt.strptime(start_full, "%d.%m.%Y")
+                        end_date_cert = _dt.strptime(end_full, "%d.%m.%Y")
+                        # Если год не указан и конец раньше начала — конец в следующем году
+                        if len(end_parts) == 2 and len(start_parts) != 3 and end_date_cert < start_date_cert:
+                            end_date_cert = end_date_cert.replace(year=end_date_cert.year + 1)
+                        if end_date_cert < start_date_cert:
+                            print(f"⚠️ Дата окончания справки раньше начала, пропускаем")
+                            data["_cert_date_error"] = True
                         else:
-                            end_full = end_str
-                        end_date = _dt.strptime(end_full, "%d.%m.%Y")
-                        data["student_cert_end_date"] = end_date.strftime("%d.%m.%Y")
-                        print(f"✓ Дата окончания справки (явка): {data['student_cert_end_date']}")
+                            data["student_cert_end_date"] = end_date_cert.strftime("%d.%m.%Y")
+                            print(f"✓ Дата окончания справки (явка): {data['student_cert_end_date']}")
                     except Exception as e:
                         print(f"⚠️ Ошибка парсинга даты справки: {e}")
+                        data["_cert_date_error"] = True
             # Новые поля для дат
             elif re.match(r"^дата осмотра\s*:", line, re.IGNORECASE):
                 data["examination_date"] = re.sub(r"^дата осмотра\s*:\s*", "", line, flags=re.IGNORECASE).strip()
@@ -1406,17 +1474,15 @@ class MedicalBot:
                                 year = str(datetime.now().year)
 
                             # Формируем полные даты с годом
-                            if len(start_parts) == 2:
-                                start_str_full = f"{start_str}.{year}"
-                            else:
-                                start_str_full = start_str
-                            if len(end_parts) == 2:
-                                end_str_full = f"{end_str}.{year}"
-                            else:
-                                end_str_full = end_str
+                            start_str_full = start_str if len(start_parts) == 3 else f"{start_str}.{year}"
+                            end_str_full = end_str if len(end_parts) == 3 else f"{end_str}.{year}"
 
                             start_date = datetime.strptime(start_str_full, "%d.%m.%Y")
                             end_date = datetime.strptime(end_str_full, "%d.%m.%Y")
+
+                            # Если год не был явно указан и конец раньше начала — конец в следующем году
+                            if len(end_parts) == 2 and len(start_parts) != 3 and end_date < start_date:
+                                end_date = end_date.replace(year=end_date.year + 1)
 
                             days_value = (end_date - start_date).days + 1  # Включительно
                             data["sick_leave_days"] = days_value
@@ -1427,20 +1493,27 @@ class MedicalBot:
                             print(f"✓ ЭЛН срок: с {start_date.strftime('%d.%m.%Y')} по {end_date.strftime('%d.%m.%Y')} = {days_value} дней")
                         except Exception as e:
                             print(f"⚠️ Ошибка парсинга дат ЭЛН: {e}")
+                            data["_eln_parse_error"] = True
                     # Или ищем "N дней/дня"
-                    elif re.search(r"(\d{1,2})\s*(?:день|дня|дней)", eln_text):
-                        days_match = re.search(r"(\d{1,2})\s*(?:день|дня|дней)", eln_text)
+                    elif re.search(r"(\d{1,3})\s*(?:день|дня|дней)", eln_text):
+                        days_match = re.search(r"(\d{1,3})\s*(?:день|дня|дней)", eln_text)
                         days_value = int(days_match.group(1))
-                        data["sick_leave_days"] = days_value
-                        data["eln_refused"] = False
-                        print(f"✓ ЭЛН дней: {days_value}")
-                    # Или просто число (НЕ СНИЛС - не больше 2 цифр)
+                        if 1 <= days_value <= 60:
+                            data["sick_leave_days"] = days_value
+                            data["eln_refused"] = False
+                            print(f"✓ ЭЛН дней: {days_value}")
+                        else:
+                            data["_eln_days_error"] = days_value
+                    # Или просто число (1–60 дней)
                     elif re.search(r"\b(\d{1,2})\b", eln_text):
                         match = re.search(r"\b(\d{1,2})\b", eln_text)
                         days_value = int(match.group(1))
-                        data["sick_leave_days"] = days_value
-                        data["eln_refused"] = False
-                        print(f"✓ ЭЛН дней (число): {days_value}")
+                        if 1 <= days_value <= 60:
+                            data["sick_leave_days"] = days_value
+                            data["eln_refused"] = False
+                            print(f"✓ ЭЛН дней (число): {days_value}")
+                        else:
+                            data["_eln_days_error"] = days_value
 
         return data
 
