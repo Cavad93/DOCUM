@@ -8,6 +8,7 @@ class ClinicMode(str, Enum):
     """Режимы клиник"""
     DINASTIYA = "dinastiya"
     PSKP = "pskp"
+    GODOK = "godok"
 
 
 class BotState(str, Enum):
@@ -17,6 +18,9 @@ class BotState(str, Enum):
     AWAITING_CONFIRMATION = "awaiting_confirmation"
     AWAITING_CORRECTIONS = "awaiting_corrections"
     AWAITING_PHOTO = "awaiting_photo"  # Ожидание фото осмотра для email
+    GODOK_AWAITING_DEAL_CHOICE = "godok_awaiting_deal_choice"  # Выбор из нескольких сделок
+    GODOK_AWAITING_CONFIRMATION = "godok_awaiting_confirmation"  # Подтверждение записи в Б24
+    GODOK_AWAITING_CORRECTIONS = "godok_awaiting_corrections"  # Ожидание текста правок
 
 
 @dataclass
@@ -76,3 +80,9 @@ class BotContext:
     saved_document_path: Optional[str] = None  # Путь к сохраненному документу для email
     examination_photos: Optional[list] = None  # Фото осмотра для email вложений
     document_queue: Optional[list] = None  # Очередь документов для пакетной отправки (только для ПСКП)
+    # ГОДОК: текущая Б24-сделка и сгенерированные значения полей
+    godok_deal_id: Optional[int] = None
+    godok_deal_title: Optional[str] = None
+    godok_fields: Optional[dict] = None  # {UF_CRM_xxx: value, ...} — готово к crm.deal.update
+    godok_candidates: Optional[list] = None  # Найденные сделки при выборе из нескольких
+    godok_message_time: Optional[str] = None  # Время отправки сообщения врачом (для "Фактической даты")

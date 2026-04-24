@@ -24,6 +24,7 @@ from bot.services.claude_service import ClaudeService
 from bot.services.archive_service import ArchiveService
 from bot.services.email_service import EmailService
 from bot.services.document_queue_service import DocumentQueueService
+from bot.services.bitrix_service import BitrixService, BitrixError
 
 
 class MedicalBot:
@@ -36,7 +37,8 @@ class MedicalBot:
         smtp_host: str = "",
         smtp_port: int = 587,
         smtp_user: str = "",
-        smtp_password: str = ""
+        smtp_password: str = "",
+        bitrix_webhook: str = ""
     ):
         """
         Инициализация бота
@@ -48,6 +50,7 @@ class MedicalBot:
             smtp_port: Порт SMTP
             smtp_user: Email отправителя
             smtp_password: Пароль от email
+            bitrix_webhook: URL входящего вебхука Битрикс24 (для ГОДОК)
         """
         # Создание приложения с увеличенными таймаутами и retry логикой
         self.application = (
@@ -71,6 +74,18 @@ class MedicalBot:
         else:
             self.email_service = None
             print("⚠️ Email не настроен (добавьте SMTP_USER и SMTP_PASSWORD в .env)")
+
+        # Битрикс24 сервис (опциональный — нужен для режима ГОДОК)
+        if bitrix_webhook:
+            try:
+                self.bitrix_service = BitrixService(bitrix_webhook)
+                print("✓ Битрикс24 сервис инициализирован")
+            except Exception as e:
+                print(f"⚠️ Битрикс24 не инициализирован: {e}")
+                self.bitrix_service = None
+        else:
+            self.bitrix_service = None
+            print("⚠️ Битрикс24 не настроен (добавьте BITRIX_WEBHOOK_URL в .env для режима ГОДОК)")
 
         self._setup_handlers()
 
@@ -180,7 +195,10 @@ class MedicalBot:
             [
                 InlineKeyboardButton("🏥 Династия", callback_data="clinic_dinastiya"),
                 InlineKeyboardButton("🏥 ПСКП", callback_data="clinic_pskp"),
-            ]
+            ],
+            [
+                InlineKeyboardButton("🏥 ГОДОК (Б24)", callback_data="clinic_godok"),
+            ],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -278,7 +296,10 @@ class MedicalBot:
             [
                 InlineKeyboardButton("🏥 Династия", callback_data="clinic_dinastiya"),
                 InlineKeyboardButton("🏥 ПСКП", callback_data="clinic_pskp"),
-            ]
+            ],
+            [
+                InlineKeyboardButton("🏥 ГОДОК (Б24)", callback_data="clinic_godok"),
+            ],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -346,7 +367,10 @@ class MedicalBot:
             [
                 InlineKeyboardButton("🏥 Династия", callback_data="clinic_dinastiya"),
                 InlineKeyboardButton("🏥 ПСКП", callback_data="clinic_pskp"),
-            ]
+            ],
+            [
+                InlineKeyboardButton("🏥 ГОДОК (Б24)", callback_data="clinic_godok"),
+            ],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -365,7 +389,8 @@ class MedicalBot:
             cancel_message +
             "Выберите клинику для начала работы:\n\n"
             "🏥 Династия\n"
-            "🏥 ПСКП",
+            "🏥 ПСКП\n"
+            "🏥 ГОДОК (Битрикс24)",
             reply_markup=reply_markup,
         )
 
@@ -793,6 +818,54 @@ class MedicalBot:
             user_context.clinic = ClinicMode.PSKP
             await query.message.reply_text("✅ Выбрана клиника \"ПСКП\"")
 
+        elif data == "clinic_godok":
+            if not self.bitrix_service:
+                await query.message.reply_text(
+                    "❌ Режим ГОДОК недоступен: не настроен Битрикс24.\n"
+                    "Добавьте BITRIX_WEBHOOK_URL в файл .env и перезапустите бота."
+                )
+            else:
+                user_context.clinic = ClinicMode.GODOK
+                await query.message.reply_text(
+                    "✅ Выбран режим \"ГОДОК\" (Битрикс24)\n\n"
+                    "Отправьте данные пациента текстом:\n"
+                    "ФИО: Иванов Иван Иванович\n"
+                    "Дата рождения: 01.01.1990\n"
+                    "Диагноз: Острый бронхит (J20.9)\n"
+                    "Место работы: АО Т-БАНК (необязательно)\n"
+                    "Должность: эксперт (необязательно)\n"
+                    "ЭЛН: 27.12.2025 по 31.12.2025 (необязательно)\n"
+                    "Дата осмотра: 25.12.2025 (необязательно, по умолчанию — сегодня)\n\n"
+                    "Бот найдёт сделку в воронке «ПНД ПОМОЩЬ НА ДОМУ», "
+                    "сгенерирует все поля карточки и покажет предпросмотр перед записью."
+                )
+
+        elif data.startswith("godok_pick_deal_"):
+            await self._handle_godok_deal_choice(query.message, user_context, data)
+
+        elif data == "godok_confirm_write":
+            await self._handle_godok_confirm(query.message, user_context)
+
+        elif data == "godok_request_corrections":
+            user_context.state = BotState.GODOK_AWAITING_CORRECTIONS
+            await query.message.reply_text(
+                "✏️ Отправьте текстом, что нужно изменить в карточке.\n\n"
+                "Например:\n"
+                "• Поставить температуру 38.5\n"
+                "• Добавить в жалобы кашель с мокротой\n"
+                "• Изменить диагноз на J06.9\n"
+                "• В назначениях: добавить Нурофен 400мг 3 р/д 5 дней"
+            )
+
+        elif data == "godok_cancel":
+            user_context.state = BotState.IDLE
+            user_context.godok_deal_id = None
+            user_context.godok_deal_title = None
+            user_context.godok_fields = None
+            user_context.godok_candidates = None
+            user_context.godok_message_time = None
+            await query.message.reply_text("❌ Запись в Битрикс24 отменена.")
+
         elif data == "confirm_template":
             success = await self._save_template(query.message, user_context)
             if success:
@@ -978,6 +1051,21 @@ class MedicalBot:
         text = update.message.text
 
         try:
+            # ГОДОК: правки к сгенерированной карточке
+            if user_context.state == BotState.GODOK_AWAITING_CORRECTIONS:
+                await self._handle_godok_corrections(update.message, user_context, text)
+                return
+
+            # ГОДОК: ожидаем кнопку подтверждения/правок/выбор сделки
+            if user_context.state in (
+                BotState.GODOK_AWAITING_CONFIRMATION,
+                BotState.GODOK_AWAITING_DEAL_CHOICE,
+            ):
+                await update.message.reply_text(
+                    "Пожалуйста, используйте кнопки для выбора действия."
+                )
+                return
+
             # Если ожидаем комментарии для правок
             if user_context.state == BotState.AWAITING_CORRECTIONS:
                 await self._handle_corrections(update.message, user_context, text)
@@ -1099,6 +1187,11 @@ class MedicalBot:
                 student_certificate=student_certificate,
                 student_cert_end_date=student_cert_end_date,
             )
+
+            # ГОДОК: вместо генерации .docx — поиск сделки в Б24 и заполнение карточки
+            if user_context.clinic == ClinicMode.GODOK:
+                await self._start_godok_flow(update.message, user_context, patient_data)
+                return
 
             # Генерируем шаблон
             await self._generate_and_show_template(update.message, user_context, patient_data)
@@ -1386,6 +1479,280 @@ class MedicalBot:
                         Path(temp_filepath).unlink()
                     except Exception as e:
                         print(f"Ошибка удаления временного файла: {e}")
+
+    # ──────────── ГОДОК (Битрикс24) ────────────
+
+    @staticmethod
+    def _date_ru_to_iso(date_ru: str) -> str:
+        """'25.12.2025' → '2025-12-25'. Пустая строка — сегодняшняя дата."""
+        if not date_ru:
+            return datetime.now().strftime("%Y-%m-%d")
+        try:
+            return datetime.strptime(date_ru.strip(), "%d.%m.%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            return datetime.now().strftime("%Y-%m-%d")
+
+    def _build_godok_context_values(self, patient_data: PatientData, message_time_iso: str) -> Dict[str, str]:
+        """Собирает значения context-полей карточки (дата вызова, врач, ЭЛН, работа)."""
+        ctx: Dict[str, str] = {}
+        ctx["UF_CRM_1601396238"] = message_time_iso  # Фактическая дата и время выполнения вызова
+        ctx["UF_CRM_1601396897"] = self.bitrix_service.assigned_doctor()  # Назначенный врач
+        if patient_data.workplace:
+            ctx["UF_CRM_1601396599"] = patient_data.workplace
+        if patient_data.position:
+            ctx["UF_CRM_1601396588"] = patient_data.position
+        if patient_data.eln_start_date and patient_data.eln_end_date and not patient_data.eln_refused:
+            ctx["UF_CRM_1601396409"] = self._date_ru_to_iso(patient_data.eln_start_date)
+            ctx["UF_CRM_1601396467"] = self._date_ru_to_iso(patient_data.eln_end_date)
+            # Явка в поликлинику — на следующий день после окончания ЭЛН
+            try:
+                end_dt = datetime.strptime(patient_data.eln_end_date, "%d.%m.%Y")
+                from datetime import timedelta
+                ctx["UF_CRM_1601397346"] = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+        return ctx
+
+    async def _start_godok_flow(self, message, user_context: BotContext, patient_data: PatientData):
+        """Ищет сделку в Б24 и запускает генерацию полей карточки."""
+        if not self.bitrix_service:
+            await message.reply_text("❌ Битрикс24 не настроен. Переключитесь на другую клинику.")
+            user_context.state = BotState.IDLE
+            return
+
+        exam_date_ru = patient_data.examination_date or datetime.now().strftime("%d.%m.%Y")
+        exam_date_iso = self._date_ru_to_iso(exam_date_ru)
+
+        # Запоминаем дату сообщения (время врача) — для "Фактической даты выполнения"
+        user_context.godok_message_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+03:00")
+        user_context.patient_data = {
+            "full_name": patient_data.full_name,
+            "birth_date": patient_data.birth_date,
+            "diagnosis": patient_data.diagnosis,
+            "examination_date": exam_date_ru,
+            "workplace": patient_data.workplace,
+            "position": patient_data.position,
+            "eln_start_date": patient_data.eln_start_date,
+            "eln_end_date": patient_data.eln_end_date,
+            "eln_refused": patient_data.eln_refused,
+            "is_student": patient_data.is_student,
+        }
+
+        await message.reply_text(f"🔎 Ищу сделку в Битрикс24 (ГОДОК, {exam_date_ru})...")
+        try:
+            deals = await asyncio.to_thread(
+                self.bitrix_service.find_deals_by_patient,
+                patient_data.full_name,
+                exam_date_iso,
+            )
+        except BitrixError as e:
+            await message.reply_text(f"❌ Ошибка Битрикс24: {e}")
+            user_context.state = BotState.IDLE
+            return
+
+        if not deals:
+            await message.reply_text(
+                f"⚠️ Сделка не найдена.\n\n"
+                f"ФИО: {patient_data.full_name}\n"
+                f"Дата вызова: {exam_date_ru}\n"
+                f"Воронка: «ПНД ПОМОЩЬ НА ДОМУ» (CATEGORY_ID=10)\n\n"
+                "Проверьте, что вызов создан в Битрикс24 на эту дату, и попробуйте ещё раз."
+            )
+            user_context.state = BotState.IDLE
+            return
+
+        if len(deals) == 1:
+            deal = deals[0]
+            user_context.godok_deal_id = int(deal["ID"])
+            user_context.godok_deal_title = deal.get("TITLE", "")
+            await self._generate_godok_preview(message, user_context, patient_data)
+            return
+
+        # Несколько сделок — просим выбрать
+        user_context.godok_candidates = [
+            {"id": int(d["ID"]), "title": d.get("TITLE", ""), "begin": d.get("BEGINDATE", "")}
+            for d in deals[:10]
+        ]
+        user_context.state = BotState.GODOK_AWAITING_DEAL_CHOICE
+
+        buttons = []
+        for i, d in enumerate(user_context.godok_candidates):
+            label = f"#{d['id']}: {d['title'][:40]}"
+            buttons.append([InlineKeyboardButton(label, callback_data=f"godok_pick_deal_{i}")])
+        buttons.append([InlineKeyboardButton("❌ Отменить", callback_data="godok_cancel")])
+        await message.reply_text(
+            f"Найдено сделок: {len(deals)}. Выберите нужную:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    async def _handle_godok_deal_choice(self, message, user_context: BotContext, callback_data: str):
+        """Обработка выбора одной из нескольких найденных сделок."""
+        if not user_context.godok_candidates:
+            await message.reply_text("❌ Список сделок устарел, начните заново.")
+            user_context.state = BotState.IDLE
+            return
+        try:
+            idx = int(callback_data.rsplit("_", 1)[-1])
+            deal = user_context.godok_candidates[idx]
+        except (ValueError, IndexError):
+            await message.reply_text("❌ Некорректный выбор сделки.")
+            return
+
+        user_context.godok_deal_id = deal["id"]
+        user_context.godok_deal_title = deal["title"]
+        user_context.godok_candidates = None
+
+        # Восстанавливаем PatientData из сохранённого словаря
+        pd = user_context.patient_data or {}
+        patient_data = PatientData(
+            full_name=pd.get("full_name", ""),
+            birth_date=pd.get("birth_date", ""),
+            diagnosis=pd.get("diagnosis", ""),
+            examination_date=pd.get("examination_date"),
+            workplace=pd.get("workplace"),
+            position=pd.get("position"),
+            eln_start_date=pd.get("eln_start_date"),
+            eln_end_date=pd.get("eln_end_date"),
+            eln_refused=pd.get("eln_refused", False),
+            is_student=pd.get("is_student", False),
+        )
+        await self._generate_godok_preview(message, user_context, patient_data)
+
+    async def _generate_godok_preview(
+        self,
+        message,
+        user_context: BotContext,
+        patient_data: PatientData,
+        corrections: str = "",
+    ):
+        """Генерирует значения полей через Claude и показывает предпросмотр."""
+        try:
+            await message.reply_text("🤖 Заполняю карточку осмотра (Claude + Битрикс24)...")
+            ai_specs = self.bitrix_service.ai_field_specs()
+            ai_values = await self.claude_service.generate_godok_fields(
+                patient_data=patient_data,
+                ai_field_specs=ai_specs,
+                current_values=user_context.godok_fields if corrections else None,
+                corrections=corrections or None,
+            )
+        except Exception as e:
+            print(f"Ошибка генерации полей ГОДОК: {e}")
+            await message.reply_text(f"❌ Не удалось сгенерировать поля: {e}")
+            user_context.state = BotState.IDLE
+            return
+
+        context_values = self._build_godok_context_values(patient_data, user_context.godok_message_time)
+        payload = self.bitrix_service.build_update_payload(ai_values, context_values)
+        user_context.godok_fields = payload
+        user_context.state = BotState.GODOK_AWAITING_CONFIRMATION
+
+        preview = self._format_godok_preview(payload, ai_specs, patient_data, user_context.godok_deal_title)
+        buttons = [
+            [
+                InlineKeyboardButton("✅ Записать в Б24", callback_data="godok_confirm_write"),
+                InlineKeyboardButton("✏️ Правки", callback_data="godok_request_corrections"),
+            ],
+            [InlineKeyboardButton("❌ Отменить", callback_data="godok_cancel")],
+        ]
+        # Telegram лимит — 4096 символов на сообщение; карточка обычно укладывается.
+        if len(preview) > 3900:
+            preview = preview[:3900] + "\n…(обрезано)"
+        await message.reply_text(preview, reply_markup=InlineKeyboardMarkup(buttons))
+
+    def _format_godok_preview(
+        self,
+        payload: Dict[str, object],
+        ai_specs: Dict[str, dict],
+        patient_data: PatientData,
+        deal_title: str,
+    ) -> str:
+        """Форматирует словарь полей для предпросмотра в Telegram."""
+        lines = [
+            f"📋 Карточка ГОДОК — сделка «{deal_title}»",
+            f"Пациент: {patient_data.full_name} ({patient_data.birth_date})",
+            f"Диагноз: {patient_data.diagnosis}",
+            "",
+        ]
+        for code, value in payload.items():
+            spec = ai_specs.get(code)
+            if spec:
+                label = spec["label"]
+                if spec["type"] == "enumeration":
+                    opt = next((o["value"] for o in spec["options"] if o["id"] == value), str(value))
+                    lines.append(f"• {label}: {opt}")
+                else:
+                    text = str(value)
+                    if len(text) > 180:
+                        text = text[:180] + "…"
+                    lines.append(f"• {label}: {text}")
+            else:
+                # context-поле
+                lines.append(f"• [ctx] {code}: {value}")
+        lines.append("")
+        lines.append("Нажмите «Записать в Б24», чтобы обновить сделку.")
+        return "\n".join(lines)
+
+    async def _handle_godok_corrections(self, message, user_context: BotContext, corrections: str):
+        """Применяет правки врача и перегенерирует карточку."""
+        if not user_context.godok_fields or not user_context.patient_data:
+            await message.reply_text("❌ Нет активной карточки для правок.")
+            user_context.state = BotState.IDLE
+            return
+        pd = user_context.patient_data
+        patient_data = PatientData(
+            full_name=pd.get("full_name", ""),
+            birth_date=pd.get("birth_date", ""),
+            diagnosis=pd.get("diagnosis", ""),
+            examination_date=pd.get("examination_date"),
+            workplace=pd.get("workplace"),
+            position=pd.get("position"),
+            eln_start_date=pd.get("eln_start_date"),
+            eln_end_date=pd.get("eln_end_date"),
+            eln_refused=pd.get("eln_refused", False),
+            is_student=pd.get("is_student", False),
+        )
+        # Готовим current_values только для AI-полей (чтобы Claude видел, что менять)
+        ai_codes = set(self.bitrix_service.ai_field_specs().keys())
+        current_ai_values = {
+            code: val for code, val in (user_context.godok_fields or {}).items() if code in ai_codes
+        }
+        # Временно подменим, чтобы _generate_godok_preview передал current_values
+        user_context.godok_fields = current_ai_values
+        await self._generate_godok_preview(message, user_context, patient_data, corrections=corrections)
+
+    async def _handle_godok_confirm(self, message, user_context: BotContext):
+        """Записывает карточку в Битрикс24."""
+        if not user_context.godok_deal_id or not user_context.godok_fields:
+            await message.reply_text("❌ Нет данных для записи.")
+            user_context.state = BotState.IDLE
+            return
+        try:
+            await message.reply_text("💾 Обновляю сделку в Битрикс24...")
+            ok = await asyncio.to_thread(
+                self.bitrix_service.update_deal,
+                user_context.godok_deal_id,
+                user_context.godok_fields,
+            )
+        except BitrixError as e:
+            await message.reply_text(f"❌ Битрикс24 отклонил обновление: {e}")
+            return
+
+        if ok:
+            await message.reply_text(
+                f"✅ Сделка #{user_context.godok_deal_id} обновлена.\n"
+                f"«{user_context.godok_deal_title}»"
+            )
+        else:
+            await message.reply_text("⚠️ Битрикс24 вернул неуспешный ответ. Проверьте сделку вручную.")
+
+        # Сброс контекста
+        user_context.state = BotState.IDLE
+        user_context.godok_deal_id = None
+        user_context.godok_deal_title = None
+        user_context.godok_fields = None
+        user_context.godok_candidates = None
+        user_context.godok_message_time = None
+        user_context.patient_data = None
 
     def _parse_text_data(self, text: str) -> Dict[str, str]:
         """Парсинг текстовых данных пациента"""

@@ -40,6 +40,9 @@ def main():
     smtp_user = os.getenv("SMTP_USER", "")
     smtp_password = os.getenv("SMTP_PASSWORD", "")
 
+    # Битрикс24 настройки (опциональные, нужны для режима ГОДОК)
+    bitrix_webhook = os.getenv("BITRIX_WEBHOOK_URL", "")
+
     # Баннер
     print("""
 ╔═══════════════════════════════════════════════════════════╗
@@ -49,6 +52,7 @@ def main():
 ║   Поддерживаемые клиники:                                ║
 ║   • Династия                                             ║
 ║   • ПСКП                                                 ║
+║   • ГОДОК (Битрикс24)                                    ║
 ║                                                           ║
 ║   Возможности:                                           ║
 ║   • Распознавание фото документов (OCR)                  ║
@@ -72,7 +76,8 @@ def main():
             smtp_host=smtp_host,
             smtp_port=smtp_port,
             smtp_user=smtp_user,
-            smtp_password=smtp_password
+            smtp_password=smtp_password,
+            bitrix_webhook=bitrix_webhook,
         )
         print("✅ Бот успешно инициализирован")
         print("🚀 Бот работает! Нажмите Ctrl+C для остановки\n")

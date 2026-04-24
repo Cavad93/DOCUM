@@ -906,3 +906,119 @@ class ClaudeService:
         except Exception as e:
             print(f"Ошибка исправления шаблона: {e}")
             raise
+
+    async def generate_godok_fields(
+        self,
+        patient_data: PatientData,
+        ai_field_specs: Dict[str, dict],
+        current_values: Optional[Dict[str, str]] = None,
+        corrections: Optional[str] = None,
+    ) -> Dict[str, object]:
+        """
+        Генерация значений полей карточки ГОДОК через tool_use (структурированный JSON).
+
+        ai_field_specs — из data/bitrix/godok_fields.json → ai_fields.
+        current_values — текущие значения (для режима правок).
+        corrections — текст правок от врача (для режима правок).
+
+        Возвращает {UF_CRM_xxx: value, ...}. Значения:
+        - string: str
+        - double: float / int
+        - enumeration: int (ID из options)
+        """
+        # Собираем JSON-schema для tool_use
+        properties: Dict[str, dict] = {}
+        required: List[str] = []
+        for code, spec in ai_field_specs.items():
+            label = spec["label"]
+            ftype = spec["type"]
+            hint = spec.get("ai_hint", "")
+            if ftype == "enumeration":
+                enum_ids = [opt["id"] for opt in spec["options"]]
+                opts_desc = "; ".join(f"{opt['id']}={opt['value']}" for opt in spec["options"])
+                properties[code] = {
+                    "type": "integer",
+                    "enum": enum_ids,
+                    "description": f"{label}. Выбери ID из списка: {opts_desc}",
+                }
+            elif ftype == "double":
+                properties[code] = {
+                    "type": "number",
+                    "description": f"{label}. {hint}",
+                }
+            else:
+                properties[code] = {
+                    "type": "string",
+                    "description": f"{label}. {hint}",
+                }
+            required.append(code)
+
+        tool = {
+            "name": "fill_godok_card",
+            "description": "Заполнить все поля карточки осмотра ГОДОК значениями под диагноз пациента.",
+            "input_schema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        }
+
+        s = self._sanitize
+        eln_info = ""
+        if patient_data.eln_start_date and patient_data.eln_end_date:
+            eln_info = f"\nПериод ЭЛН: с {patient_data.eln_start_date} по {patient_data.eln_end_date} (нетрудоспособен)"
+        workplace_info = ""
+        if patient_data.workplace:
+            workplace_info += f"\nМесто работы пациента: {patient_data.workplace}"
+        if patient_data.position:
+            workplace_info += f"\nДолжность пациента: {patient_data.position}"
+
+        system_prompt = """Ты — опытный врач-терапевт, заполняющий карточку осмотра на дому в CRM Битрикс24 (клиника ГОДОК).
+
+ПРАВИЛА:
+1. Заполни ВСЕ поля карточки через инструмент fill_godok_card. Без инструмента не отвечай.
+2. Показатели (t, ЧДД, ЧСС, АД) — реалистичные под диагноз, не шаблонные.
+3. Описательные поля (зев, лёгкие, кожа, сердце и т.д.) — адаптируй фразу под диагноз, а не копируй «болванку». Для ОРВИ — гиперемия зева, при пневмонии — жёсткое дыхание/хрипы, и т.д.
+4. В поле «DS (с МКБ)»: если врач указал МКБ-код — использовать как есть; иначе проставить корректный код МКБ-10 в скобках.
+5. «Назначение 1..4» — конкретные препараты с дозировкой и длительностью, а не общие слова. Если 4 не нужны — 4-е поле можно оставить коротким общим пунктом (например, «Контроль температуры»), пустую строку не возвращать.
+6. «Трудоспособность»: если дан период ЭЛН → выбирай «Временно нетрудоспособен/на» (id=1694). Если ЭЛН нет — «Трудоспособен/на» (id=1696).
+7. «Режим»: при ОРВИ/ОРЗ — «домашний». При тяжёлом — «постельный». Если амбулаторно — «амбулаторный».
+8. Не упоминай других пациентов, клиники, дату, ФИО врача в описательных полях."""
+
+        user_message = f"""Заполни карточку осмотра для пациента:
+
+ФИО: {s(patient_data.full_name)}
+Дата рождения: {s(patient_data.birth_date)}
+Диагноз: {s(patient_data.diagnosis)}{eln_info}{workplace_info}
+
+Вызови инструмент fill_godok_card и передай значения ВСЕХ полей."""
+
+        if corrections and current_values:
+            current_json = json.dumps(current_values, ensure_ascii=False, indent=2)
+            user_message = f"""Ты ранее заполнил карточку осмотра:
+
+{current_json}
+
+Врач прислал правки:
+{s(corrections, max_len=2000)}
+
+Применить ВСЕ правки. Остальные поля оставь без изменений. Вызови fill_godok_card с ПОЛНЫМ набором полей (изменённых + неизменённых).
+
+Контекст пациента:
+ФИО: {s(patient_data.full_name)}
+Диагноз: {s(patient_data.diagnosis)}{eln_info}"""
+
+        message = self.client.messages.create(
+            model=self.GENERATION_MODEL,
+            max_tokens=4096,
+            system=system_prompt,
+            tools=[tool],
+            tool_choice={"type": "tool", "name": "fill_godok_card"},
+            messages=[{"role": "user", "content": user_message}],
+        )
+
+        # Извлекаем tool_use блок
+        for block in message.content:
+            if getattr(block, "type", None) == "tool_use" and block.name == "fill_godok_card":
+                return dict(block.input)
+        raise RuntimeError("Claude не вернул tool_use блок fill_godok_card")
