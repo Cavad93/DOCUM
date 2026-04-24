@@ -2,11 +2,12 @@
 Сервис интеграции с Битрикс24 для клиники ГОДОК.
 Работает через входящий вебхук (REST API).
 """
+import base64
 import json
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class BitrixError(Exception):
@@ -26,6 +27,8 @@ class BitrixService:
         if fields_map_path is None:
             fields_map_path = Path(__file__).parent.parent.parent / "data" / "bitrix" / "godok_fields.json"
         self.fields_map: Dict[str, Any] = json.loads(fields_map_path.read_text(encoding="utf-8"))
+        self._deal_fields_cache: Optional[Dict[str, Any]] = None
+        self._photo_field_cache: Optional[str] = None
 
     def _call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """POST-вызов метода REST. Возвращает содержимое `result`."""
@@ -117,3 +120,62 @@ class BitrixService:
 
     def assigned_doctor(self) -> str:
         return self.fields_map.get("assigned_doctor", "")
+
+    def list_deal_fields(self) -> Dict[str, Any]:
+        """crm.deal.fields с кешем — метаданные всех полей сделки."""
+        if self._deal_fields_cache is None:
+            self._deal_fields_cache = self._call("crm.deal.fields") or {}
+        return self._deal_fields_cache
+
+    def find_photo_field(self, label_hint: str = "рекомендац") -> Optional[str]:
+        """
+        Находит UF_CRM_* поле типа 'file' с названием, содержащим label_hint.
+        Приоритет: явно заданное 'photo_recommendations_field' в fields_map.
+        """
+        explicit = self.fields_map.get("photo_recommendations_field")
+        if explicit:
+            return explicit
+        if self._photo_field_cache is not None:
+            return self._photo_field_cache or None
+
+        hint_lower = label_hint.lower()
+        for code, meta in self.list_deal_fields().items():
+            if not code.startswith("UF_CRM_"):
+                continue
+            if str(meta.get("type", "")).lower() != "file":
+                continue
+            labels = meta.get("formLabel") or meta.get("title") or ""
+            if isinstance(labels, dict):
+                label_text = " ".join(str(v) for v in labels.values())
+            else:
+                label_text = str(labels)
+            if hint_lower in label_text.lower():
+                self._photo_field_cache = code
+                return code
+        self._photo_field_cache = ""
+        return None
+
+    @staticmethod
+    def _encode_file_for_bitrix(filename: str, content: bytes) -> List[str]:
+        """Формат значения файла в Б24: [filename, base64_content]."""
+        return [filename, base64.b64encode(content).decode("ascii")]
+
+    def upload_photos_to_deal(
+        self,
+        deal_id: int,
+        field_code: str,
+        photos: List[Tuple[str, bytes]],
+    ) -> bool:
+        """
+        Загружает список фото в файловое поле сделки. photos — [(filename, bytes), ...].
+        Мультифайловое поле принимает список значений вида [filename, base64].
+        """
+        if not photos:
+            return True
+        encoded = [self._encode_file_for_bitrix(name, data) for name, data in photos]
+        # Для мультифайлового поля — список; для одинарного — первое значение.
+        meta = self.list_deal_fields().get(field_code, {})
+        is_multiple = bool(meta.get("isMultiple"))
+        value: Any = encoded if is_multiple else encoded[0]
+        ok = self._call("crm.deal.update", {"id": deal_id, "fields": {field_code: value}})
+        return bool(ok)

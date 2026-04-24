@@ -21,6 +21,7 @@ class BotState(str, Enum):
     GODOK_AWAITING_DEAL_CHOICE = "godok_awaiting_deal_choice"  # Выбор из нескольких сделок
     GODOK_AWAITING_CONFIRMATION = "godok_awaiting_confirmation"  # Подтверждение записи в Б24
     GODOK_AWAITING_CORRECTIONS = "godok_awaiting_corrections"  # Ожидание текста правок
+    GODOK_AWAITING_PHOTO = "godok_awaiting_photo"  # Ожидание фото для поля «Фото рекомендации»
 
 
 @dataclass

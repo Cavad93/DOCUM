@@ -858,13 +858,25 @@ class MedicalBot:
             )
 
         elif data == "godok_cancel":
-            user_context.state = BotState.IDLE
-            user_context.godok_deal_id = None
-            user_context.godok_deal_title = None
-            user_context.godok_fields = None
-            user_context.godok_candidates = None
-            user_context.godok_message_time = None
+            self._reset_godok_context(user_context)
             await query.message.reply_text("❌ Запись в Битрикс24 отменена.")
+
+        elif data == "godok_add_photos":
+            # Остаёмся в GODOK_AWAITING_PHOTO — handle_photo уже настроен
+            await query.message.reply_text(
+                "📷 Отправьте одно или несколько фото. Затем нажмите «✅ Загрузить».",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Загрузить", callback_data="godok_upload_photos"),
+                    InlineKeyboardButton("⏭ Пропустить", callback_data="godok_skip_photos"),
+                ]])
+            )
+
+        elif data == "godok_upload_photos":
+            await self._handle_godok_upload_photos(query.message, user_context)
+
+        elif data == "godok_skip_photos":
+            await query.message.reply_text("⏭ Загрузка фото пропущена. Готово.")
+            self._reset_godok_context(user_context)
 
         elif data == "confirm_template":
             success = await self._save_template(query.message, user_context)
@@ -903,6 +915,28 @@ class MedicalBot:
         """Обработка фото документа"""
         user_id = update.effective_user.id
         user_context = self._get_or_create_context(user_id)
+
+        # ГОДОК: собираем фото для загрузки в поле «Фото рекомендации»
+        if user_context.state == BotState.GODOK_AWAITING_PHOTO:
+            try:
+                photo = update.message.photo[-1]
+                file = await context.bot.get_file(photo.file_id)
+                photo_bytes = await file.download_as_bytearray()
+                if user_context.examination_photos is None:
+                    user_context.examination_photos = []
+                user_context.examination_photos.append(photo_bytes)
+                await update.message.reply_text(
+                    f"✅ Фото {len(user_context.examination_photos)} добавлено.\n"
+                    "Пришлите ещё или нажмите «✅ Загрузить».",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("✅ Загрузить", callback_data="godok_upload_photos"),
+                        InlineKeyboardButton("⏭ Пропустить", callback_data="godok_skip_photos"),
+                    ]])
+                )
+            except Exception as e:
+                print(f"Ошибка сохранения фото для ГОДОК: {e}")
+                await update.message.reply_text("❌ Ошибка сохранения фото. Попробуйте ещё раз.")
+            return
 
         # Если ожидаем фото осмотра для email
         if user_context.state == BotState.AWAITING_PHOTO:
@@ -1737,15 +1771,86 @@ class MedicalBot:
             await message.reply_text(f"❌ Битрикс24 отклонил обновление: {e}")
             return
 
+        if not ok:
+            await message.reply_text("⚠️ Битрикс24 вернул неуспешный ответ. Проверьте сделку вручную.")
+            self._reset_godok_context(user_context)
+            return
+
+        await message.reply_text(
+            f"✅ Сделка #{user_context.godok_deal_id} обновлена.\n"
+            f"«{user_context.godok_deal_title}»"
+        )
+
+        # Предлагаем загрузить фото в поле «Фото рекомендации».
+        # Само поле не очищаем — нужно для последующего upload_photos_to_deal.
+        user_context.state = BotState.GODOK_AWAITING_PHOTO
+        user_context.examination_photos = []
+        keyboard = [
+            [
+                InlineKeyboardButton("📷 Добавить фото рекомендации", callback_data="godok_add_photos"),
+                InlineKeyboardButton("⏭ Пропустить", callback_data="godok_skip_photos"),
+            ]
+        ]
+        await message.reply_text(
+            "📷 Добавить фото в раздел «Фото рекомендации»?\n\n"
+            "Если да — отправьте одно или несколько фото, затем нажмите «✅ Загрузить».",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    async def _handle_godok_upload_photos(self, message, user_context: BotContext):
+        """Грузит собранные фото в файловое поле «Фото рекомендации»."""
+        if not user_context.godok_deal_id:
+            await message.reply_text("❌ Нет активной сделки для загрузки фото.")
+            self._reset_godok_context(user_context)
+            return
+        photos = user_context.examination_photos or []
+        if not photos:
+            await message.reply_text("⚠️ Вы не прислали ни одного фото.")
+            return
+
+        try:
+            field_code = await asyncio.to_thread(self.bitrix_service.find_photo_field, "рекомендац")
+        except BitrixError as e:
+            await message.reply_text(f"❌ Не удалось получить поля сделки: {e}")
+            return
+
+        if not field_code:
+            await message.reply_text(
+                "⚠️ Не нашёл поле «Фото рекомендации» в Битрикс24.\n"
+                "Укажите его UF_CRM-код в data/bitrix/godok_fields.json "
+                "в ключе \"photo_recommendations_field\"."
+            )
+            self._reset_godok_context(user_context)
+            return
+
+        # Собираем (имя, байты) для Bitrix
+        files = []
+        for i, raw in enumerate(photos, start=1):
+            data = bytes(raw) if isinstance(raw, bytearray) else raw
+            files.append((f"photo_{i}.jpg", data))
+
+        await message.reply_text(f"⬆️ Загружаю {len(files)} фото в Битрикс24...")
+        try:
+            ok = await asyncio.to_thread(
+                self.bitrix_service.upload_photos_to_deal,
+                user_context.godok_deal_id,
+                field_code,
+                files,
+            )
+        except BitrixError as e:
+            await message.reply_text(f"❌ Битрикс24 отклонил загрузку фото: {e}")
+            return
+
         if ok:
             await message.reply_text(
-                f"✅ Сделка #{user_context.godok_deal_id} обновлена.\n"
-                f"«{user_context.godok_deal_title}»"
+                f"✅ {len(files)} фото загружено в поле «Фото рекомендации» (сделка #{user_context.godok_deal_id})."
             )
         else:
-            await message.reply_text("⚠️ Битрикс24 вернул неуспешный ответ. Проверьте сделку вручную.")
+            await message.reply_text("⚠️ Битрикс24 вернул неуспешный ответ при загрузке фото.")
+        self._reset_godok_context(user_context)
 
-        # Сброс контекста
+    def _reset_godok_context(self, user_context: BotContext):
+        """Сброс состояния ГОДОК после завершения flow."""
         user_context.state = BotState.IDLE
         user_context.godok_deal_id = None
         user_context.godok_deal_title = None
@@ -1753,6 +1858,7 @@ class MedicalBot:
         user_context.godok_candidates = None
         user_context.godok_message_time = None
         user_context.patient_data = None
+        user_context.examination_photos = None
 
     def _parse_text_data(self, text: str) -> Dict[str, str]:
         """Парсинг текстовых данных пациента"""
