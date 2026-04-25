@@ -43,6 +43,7 @@ class PatientData:
     is_student: bool = False  # Студент (Место учёбы/Курс вместо Место работы/Должность)
     student_certificate: Optional[str] = None  # Студенческая справка (например: "129/2025 с 18.12.2025 по 22.12.2025")
     student_cert_end_date: Optional[str] = None  # Дата окончания студенческой справки (для явки к врачу)
+    smp_called: bool = False  # «Вызвана бригада СМП» — добавляется в Лечение, ЭЛН ставится отказ
 
 
 @dataclass

@@ -388,6 +388,21 @@ class ClaudeService:
         cleaned = "".join(ch for ch in value if ch == "\n" or ord(ch) >= 0x20)
         return cleaned[:max_len]
 
+    def _get_smp_instruction(self, patient_data: PatientData) -> str:
+        """
+        Особое указание для AI: если пациенту вызвана бригада СМП,
+        нужно добавить эту фразу в раздел Лечение/Назначения и не указывать ЭЛН.
+        """
+        if not getattr(patient_data, "smp_called", False):
+            return ""
+        return (
+            "ОСОБОЕ УСЛОВИЕ — ВЫЗВАНА БРИГАДА СМП:\n"
+            "1. В разделе «Лечение» / «Назначения» / «Рекомендации» / «План лечения» "
+            "ОБЯЗАТЕЛЬНО добавь отдельной строкой дословно: «Вызвана бригада СМП».\n"
+            "2. ЭЛН — отказ. Период нетрудоспособности и явка к врачу НЕ указываются.\n"
+            "3. Трудоспособность — «Трудоспособен/на» (нет периода ЭЛН)."
+        )
+
     def _get_workplace_instruction(self, patient_data: PatientData) -> str:
         """Возвращает инструкцию для AI по полю 'Место работы / Место учёбы'."""
         workplace = (patient_data.workplace or "").strip() or None
@@ -647,6 +662,8 @@ class ClaudeService:
 КРИТИЧЕСКИ ВАЖНО ПРО ЭЛН И ЯВКУ:
 {self._get_eln_instructions(patient_data)}
 
+{self._get_smp_instruction(patient_data)}
+
 ИНСТРУКЦИИ ПО СТРУКТУРЕ И ОФОРМЛЕНИЮ:
 1. СОХРАНИТЕ структуру всех разделов (Анамнез заболевания, Жалобы, Объективно и т.д.)
 2. Заполните все разделы шаблона реалистичными медицинскими данными
@@ -854,6 +871,8 @@ class ClaudeService:
 - {self._get_position_instruction(patient_data)}
 - Строка "Листы нетрудоспособности за последние 11 месяцев: ..." — сохранить точно как в шаблоне
 
+{self._get_smp_instruction(patient_data)}
+
 МЕДИЦИНСКИЙ КОНТЕНТ — МОЖНО и НУЖНО менять по запросу врача:
 - Сопутствующие заболевания и перенесённые болезни
 - Анамнез жизни (аллергии, наследственность, вредные привычки)
@@ -965,13 +984,21 @@ class ClaudeService:
 
         s = self._sanitize
         eln_info = ""
-        if patient_data.eln_start_date and patient_data.eln_end_date:
+        if patient_data.eln_start_date and patient_data.eln_end_date and not getattr(patient_data, "smp_called", False):
             eln_info = f"\nПериод ЭЛН: с {patient_data.eln_start_date} по {patient_data.eln_end_date} (нетрудоспособен)"
         workplace_info = ""
         if patient_data.workplace:
             workplace_info += f"\nМесто работы пациента: {patient_data.workplace}"
         if patient_data.position:
             workplace_info += f"\nДолжность пациента: {patient_data.position}"
+        smp_info = ""
+        if getattr(patient_data, "smp_called", False):
+            smp_info = (
+                "\n\n⚠️ ОСОБОЕ УСЛОВИЕ — ВЫЗВАНА БРИГАДА СМП:"
+                "\n- Одно из полей «Назначение 1..4» ОБЯЗАТЕЛЬНО должно дословно содержать строку: «Вызвана бригада СМП»."
+                "\n- ЭЛН — отказ. «Трудоспособность» = «Трудоспособен/на» (id=1696)."
+                "\n- Период ЭЛН и явка в поликлинику не указываются."
+            )
 
         system_prompt = """Ты — опытный врач-терапевт, заполняющий карточку осмотра на дому в CRM Битрикс24 (клиника ГОДОК).
 
@@ -983,13 +1010,14 @@ class ClaudeService:
 5. «Назначение 1..4» — конкретные препараты с дозировкой и длительностью, а не общие слова. Если 4 не нужны — 4-е поле можно оставить коротким общим пунктом (например, «Контроль температуры»), пустую строку не возвращать.
 6. «Трудоспособность»: если дан период ЭЛН → выбирай «Временно нетрудоспособен/на» (id=1694). Если ЭЛН нет — «Трудоспособен/на» (id=1696).
 7. «Режим»: при ОРВИ/ОРЗ — «домашний». При тяжёлом — «постельный». Если амбулаторно — «амбулаторный».
-8. Не упоминай других пациентов, клиники, дату, ФИО врача в описательных полях."""
+8. Не упоминай других пациентов, клиники, дату, ФИО врача в описательных полях.
+9. Если пациенту вызвана бригада СМП — одно из полей «Назначение» должно дословно содержать «Вызвана бригада СМП»; ЭЛН не оформляется."""
 
         user_message = f"""Заполни карточку осмотра для пациента:
 
 ФИО: {s(patient_data.full_name)}
 Дата рождения: {s(patient_data.birth_date)}
-Диагноз: {s(patient_data.diagnosis)}{eln_info}{workplace_info}
+Диагноз: {s(patient_data.diagnosis)}{eln_info}{workplace_info}{smp_info}
 
 Вызови инструмент fill_godok_card и передай значения ВСЕХ полей."""
 
@@ -1006,7 +1034,7 @@ class ClaudeService:
 
 Контекст пациента:
 ФИО: {s(patient_data.full_name)}
-Диагноз: {s(patient_data.diagnosis)}{eln_info}"""
+Диагноз: {s(patient_data.diagnosis)}{eln_info}{smp_info}"""
 
         message = self.client.messages.create(
             model=self.GENERATION_MODEL,

@@ -1225,6 +1225,7 @@ class MedicalBot:
             is_student = parsed_data.get("is_student") or user_context.patient_data.get("is_student", False)
             student_certificate = parsed_data.get("student_certificate") or user_context.patient_data.get("student_certificate")
             student_cert_end_date = parsed_data.get("student_cert_end_date") or user_context.patient_data.get("student_cert_end_date")
+            smp_called = bool(parsed_data.get("smp_called") or user_context.patient_data.get("smp_called", False))
 
             patient_data = PatientData(
                 full_name=full_name,
@@ -1239,6 +1240,7 @@ class MedicalBot:
                 position=position,
                 eln_start_date=eln_start_date,
                 eln_end_date=eln_end_date,
+                smp_called=smp_called,
                 is_student=bool(is_student),
                 student_certificate=student_certificate,
                 student_cert_end_date=student_cert_end_date,
@@ -1606,6 +1608,7 @@ class MedicalBot:
             "eln_end_date": patient_data.eln_end_date,
             "eln_refused": patient_data.eln_refused,
             "is_student": patient_data.is_student,
+            "smp_called": patient_data.smp_called,
         }
 
         await message.reply_text(f"🔎 Ищу сделку в Битрикс24 (ГОДОК, {exam_date_ru})...")
@@ -1685,6 +1688,7 @@ class MedicalBot:
             eln_end_date=pd.get("eln_end_date"),
             eln_refused=pd.get("eln_refused", False),
             is_student=pd.get("is_student", False),
+            smp_called=bool(pd.get("smp_called", False)),
         )
         await self._generate_godok_preview(message, user_context, patient_data)
 
@@ -1780,6 +1784,7 @@ class MedicalBot:
             eln_end_date=pd.get("eln_end_date"),
             eln_refused=pd.get("eln_refused", False),
             is_student=pd.get("is_student", False),
+            smp_called=bool(pd.get("smp_called", False)),
         )
         # Готовим current_values только для AI-полей (чтобы Claude видел, что менять)
         ai_codes = set(self.bitrix_service.ai_field_specs().keys())
@@ -2139,6 +2144,14 @@ class MedicalBot:
     def _parse_text_data(self, text: str) -> Dict[str, str]:
         """Парсинг текстовых данных пациента"""
         data = {}
+
+        # Особый триггер: «Вызвана бригада СМП» (любой регистр, в любой строке).
+        # При нём бот должен добавить эту фразу в Лечение и проставить ЭЛН: отказ.
+        if re.search(r"вызван[аыо]?\s+бригад[аы]?\s+смп", text, re.IGNORECASE):
+            data["smp_called"] = True
+            data["eln_refused"] = True
+            data["sick_leave_days"] = None
+            print("✓ Триггер «Вызвана бригада СМП» — eln_refused=True, smp_called=True")
 
         lines = text.split("\n")
         for line in lines:
