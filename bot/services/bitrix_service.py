@@ -4,10 +4,10 @@
 """
 import base64
 import json
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+import requests
 
 
 class BitrixError(Exception):
@@ -23,6 +23,9 @@ class BitrixService:
         if not webhook_url:
             raise ValueError("BITRIX_WEBHOOK_URL не задан")
         self.webhook = webhook_url.rstrip("/")
+        self._session = requests.Session()
+        # У некоторых Bitrix24-серверов узкий cipher-list: requests/OpenSSL
+        # справляется лучше urllib, но если нужно — здесь можно расширить контекст.
 
         if fields_map_path is None:
             fields_map_path = Path(__file__).parent.parent.parent / "data" / "bitrix" / "godok_fields.json"
@@ -33,13 +36,15 @@ class BitrixService:
     def _call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """POST-вызов метода REST. Возвращает содержимое `result`."""
         url = f"{self.webhook}/{method}.json"
-        data = urllib.parse.urlencode(self._flatten(params or {}), doseq=True).encode()
-        req = urllib.request.Request(url, data=data)
+        form = self._flatten(params or {})
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                payload = json.load(resp)
-        except Exception as e:
+            resp = self._session.post(url, data=form, timeout=30)
+        except requests.RequestException as e:
             raise BitrixError(f"Сетевая ошибка {method}: {e}") from e
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            raise BitrixError(f"{method}: некорректный JSON (HTTP {resp.status_code}): {resp.text[:200]}") from e
         if "error" in payload and payload.get("error"):
             raise BitrixError(f"{method}: {payload.get('error')} — {payload.get('error_description', '')}")
         return payload.get("result")
