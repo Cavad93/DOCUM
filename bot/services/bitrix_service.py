@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import certifi
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
@@ -23,6 +24,8 @@ class _LegacyTLSAdapter(HTTPAdapter):
     HTTPAdapter с расширенным TLS-контекстом для совместимости с серверами,
     у которых узкий cipher-list и/или требуется legacy-renegotiation.
     Лечит SSLV3_ALERT_HANDSHAKE_FAILURE на дефолтном Python+OpenSSL.
+    Также подгружает CA-bundle из certifi — без этого custom ssl_context
+    идёт с пустым trust store и валит CERTIFICATE_VERIFY_FAILED на Windows.
     """
 
     CIPHERS = "DEFAULT:@SECLEVEL=1"
@@ -33,6 +36,12 @@ class _LegacyTLSAdapter(HTTPAdapter):
         try:
             ctx.set_ciphers(self.CIPHERS)
         except ssl.SSLError:
+            pass
+        # Корневые CA из certifi (Mozilla bundle) — иначе trust store пустой
+        # и серверный сертификат не проверится.
+        try:
+            ctx.load_verify_locations(cafile=certifi.where())
+        except Exception:
             pass
         # Разрешаем «небезопасное» legacy-переподключение, если флаг доступен
         for opt_name in ("OP_LEGACY_SERVER_CONNECT",):
