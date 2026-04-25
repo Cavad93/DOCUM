@@ -4,6 +4,7 @@
 """
 import base64
 import json
+import os
 import ssl
 import time
 from pathlib import Path
@@ -23,27 +24,41 @@ class _LegacyTLSAdapter(HTTPAdapter):
     """
     HTTPAdapter с расширенным TLS-контекстом для совместимости с серверами,
     у которых узкий cipher-list и/или требуется legacy-renegotiation.
-    Лечит SSLV3_ALERT_HANDSHAKE_FAILURE на дефолтном Python+OpenSSL.
-    Также подгружает CA-bundle из certifi — без этого custom ssl_context
-    идёт с пустым trust store и валит CERTIFICATE_VERIFY_FAILED на Windows.
+    Лечит SSLV3_ALERT_HANDSHAKE_FAILURE и CERTIFICATE_VERIFY_FAILED на
+    дефолтном Python+OpenSSL (Windows и Linux).
     """
 
     CIPHERS = "DEFAULT:@SECLEVEL=1"
 
     def _build_context(self) -> ssl.SSLContext:
         ctx = create_urllib3_context(ciphers=self.CIPHERS)
-        # Расширяем шифры (на случай если create_urllib3_context перетёр)
         try:
             ctx.set_ciphers(self.CIPHERS)
         except ssl.SSLError:
             pass
-        # Корневые CA из certifi (Mozilla bundle) — иначе trust store пустой
-        # и серверный сертификат не проверится.
+
+        # Загружаем CA из всех доступных источников: системный store
+        # (Windows certmgr, /etc/ssl/certs) + Mozilla bundle через certifi.
+        # На Windows-Python без этого custom-контекст приходит с пустым trust
+        # store и любой запрос валится в CERTIFICATE_VERIFY_FAILED.
+        loaded_any = False
+        try:
+            ctx.load_default_certs(purpose=ssl.Purpose.SERVER_AUTH)
+            loaded_any = True
+        except Exception as e:
+            print(f"[bitrix-tls] load_default_certs failed: {e}")
         try:
             ctx.load_verify_locations(cafile=certifi.where())
-        except Exception:
-            pass
-        # Разрешаем «небезопасное» legacy-переподключение, если флаг доступен
+            loaded_any = True
+        except Exception as e:
+            print(f"[bitrix-tls] certifi load failed: {e}")
+
+        # Escape-hatch: если CA так и не нашлись или явно отключили проверку.
+        if os.getenv("BITRIX_TLS_VERIFY", "1") == "0" or not loaded_any:
+            print("[bitrix-tls] ⚠️ TLS verification DISABLED (BITRIX_TLS_VERIFY=0 или CA bundle не загружен)")
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
         for opt_name in ("OP_LEGACY_SERVER_CONNECT",):
             opt = getattr(ssl, opt_name, None)
             if opt is not None:
