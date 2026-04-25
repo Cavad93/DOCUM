@@ -4,6 +4,7 @@
 """
 import base64
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,14 +19,15 @@ class BitrixService:
     """Минимальный клиент Б24 REST: поиск сделки, чтение, обновление."""
 
     GODOK_CATEGORY_ID = 10
+    # Ретраи на 5xx и сетевые сбои: попытки и backoff (секунды).
+    RETRY_BACKOFFS = (1, 2, 4, 8)
+    RETRY_STATUSES = frozenset({500, 502, 503, 504})
 
     def __init__(self, webhook_url: str, fields_map_path: Optional[Path] = None):
         if not webhook_url:
             raise ValueError("BITRIX_WEBHOOK_URL не задан")
         self.webhook = webhook_url.rstrip("/")
         self._session = requests.Session()
-        # У некоторых Bitrix24-серверов узкий cipher-list: requests/OpenSSL
-        # справляется лучше urllib, но если нужно — здесь можно расширить контекст.
 
         if fields_map_path is None:
             fields_map_path = Path(__file__).parent.parent.parent / "data" / "bitrix" / "godok_fields.json"
@@ -34,20 +36,46 @@ class BitrixService:
         self._photo_field_cache: Optional[str] = None
 
     def _call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        """POST-вызов метода REST. Возвращает содержимое `result`."""
+        """
+        POST-вызов метода REST с ретраями на 5xx/сетевые сбои.
+        Возвращает содержимое `result`. На бизнес-ошибках Б24 (поле `error`
+        в ответе) ретраев не делает — только проброс BitrixError.
+        """
         url = f"{self.webhook}/{method}.json"
         form = self._flatten(params or {})
-        try:
-            resp = self._session.post(url, data=form, timeout=30)
-        except requests.RequestException as e:
-            raise BitrixError(f"Сетевая ошибка {method}: {e}") from e
-        try:
-            payload = resp.json()
-        except ValueError as e:
-            raise BitrixError(f"{method}: некорректный JSON (HTTP {resp.status_code}): {resp.text[:200]}") from e
-        if "error" in payload and payload.get("error"):
-            raise BitrixError(f"{method}: {payload.get('error')} — {payload.get('error_description', '')}")
-        return payload.get("result")
+        last_error: Optional[str] = None
+
+        # Всего попыток = 1 + len(RETRY_BACKOFFS); пауза перед попыткой i>0.
+        for attempt in range(len(self.RETRY_BACKOFFS) + 1):
+            if attempt > 0:
+                delay = self.RETRY_BACKOFFS[attempt - 1]
+                print(f"[bitrix] {method}: повтор через {delay}s ({last_error})")
+                time.sleep(delay)
+            try:
+                resp = self._session.post(url, data=form, timeout=30)
+            except requests.RequestException as e:
+                last_error = f"сеть: {e}"
+                continue
+
+            if resp.status_code in self.RETRY_STATUSES:
+                last_error = f"HTTP {resp.status_code}: {resp.text[:120]}"
+                continue
+
+            try:
+                payload = resp.json()
+            except ValueError as e:
+                # Не-JSON ответ при не-5xx — не транзиент, не ретраим.
+                raise BitrixError(
+                    f"{method}: некорректный JSON (HTTP {resp.status_code}): {resp.text[:200]}"
+                ) from e
+
+            if payload.get("error"):
+                raise BitrixError(
+                    f"{method}: {payload.get('error')} — {payload.get('error_description', '')}"
+                )
+            return payload.get("result")
+
+        raise BitrixError(f"Сетевая ошибка {method} после {len(self.RETRY_BACKOFFS) + 1} попыток: {last_error}")
 
     @staticmethod
     def _flatten(data: Dict[str, Any], prefix: str = "") -> List[tuple]:
