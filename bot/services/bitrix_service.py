@@ -15,6 +15,12 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
+try:
+    import truststore
+    _HAS_TRUSTSTORE = True
+except ImportError:
+    _HAS_TRUSTSTORE = False
+
 
 class BitrixError(Exception):
     """Ошибка вызова Битрикс24 REST."""
@@ -23,37 +29,47 @@ class BitrixError(Exception):
 class _LegacyTLSAdapter(HTTPAdapter):
     """
     HTTPAdapter с расширенным TLS-контекстом для совместимости с серверами,
-    у которых узкий cipher-list и/или требуется legacy-renegotiation.
-    Лечит SSLV3_ALERT_HANDSHAKE_FAILURE и CERTIFICATE_VERIFY_FAILED на
-    дефолтном Python+OpenSSL (Windows и Linux).
+    у которых узкий cipher-list, требуется legacy-renegotiation, или CA
+    подписан корпоративным/MITM-CA (Cisco Umbrella, Kaspersky и т.п.).
+
+    Сначала пробуем `truststore` — он использует нативный CryptoAPI Windows /
+    Security.framework macOS / системные пути Linux и видит ВСЕ установленные
+    в ОС CA. Это решает CERTIFICATE_VERIFY_FAILED от enterprise TLS-инспекторов.
+    Если truststore не установлен, fallback: load_default_certs + certifi.
     """
 
     CIPHERS = "DEFAULT:@SECLEVEL=1"
 
     def _build_context(self) -> ssl.SSLContext:
-        ctx = create_urllib3_context(ciphers=self.CIPHERS)
+        used_truststore = False
+        if _HAS_TRUSTSTORE:
+            # truststore.SSLContext наследуется от ssl.SSLContext — set_ciphers
+            # и пр. работают как обычно. Trust store берётся из ОС нативно.
+            ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            used_truststore = True
+        else:
+            ctx = create_urllib3_context(ciphers=self.CIPHERS)
+
         try:
             ctx.set_ciphers(self.CIPHERS)
         except ssl.SSLError:
             pass
 
-        # Загружаем CA из всех доступных источников: системный store
-        # (Windows certmgr, /etc/ssl/certs) + Mozilla bundle через certifi.
-        # На Windows-Python без этого custom-контекст приходит с пустым trust
-        # store и любой запрос валится в CERTIFICATE_VERIFY_FAILED.
-        loaded_any = False
-        try:
-            ctx.load_default_certs(purpose=ssl.Purpose.SERVER_AUTH)
-            loaded_any = True
-        except Exception as e:
-            print(f"[bitrix-tls] load_default_certs failed: {e}")
-        try:
-            ctx.load_verify_locations(cafile=certifi.where())
-            loaded_any = True
-        except Exception as e:
-            print(f"[bitrix-tls] certifi load failed: {e}")
+        loaded_any = used_truststore
+        if not used_truststore:
+            # Fallback: системный store + Mozilla CA bundle
+            try:
+                ctx.load_default_certs(purpose=ssl.Purpose.SERVER_AUTH)
+                loaded_any = True
+            except Exception as e:
+                print(f"[bitrix-tls] load_default_certs failed: {e}")
+            try:
+                ctx.load_verify_locations(cafile=certifi.where())
+                loaded_any = True
+            except Exception as e:
+                print(f"[bitrix-tls] certifi load failed: {e}")
 
-        # Escape-hatch: если CA так и не нашлись или явно отключили проверку.
+        # Escape-hatch: явное отключение или CA так и не нашлись.
         if os.getenv("BITRIX_TLS_VERIFY", "1") == "0" or not loaded_any:
             print("[bitrix-tls] ⚠️ TLS verification DISABLED (BITRIX_TLS_VERIFY=0 или CA bundle не загружен)")
             ctx.check_hostname = False
