@@ -5,7 +5,7 @@ import uuid
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
@@ -25,6 +25,7 @@ from bot.services.archive_service import ArchiveService
 from bot.services.email_service import EmailService
 from bot.services.document_queue_service import DocumentQueueService
 from bot.services.bitrix_service import BitrixService, BitrixError
+from bot.services.godok_state_service import GodokStateService
 
 
 class MedicalBot:
@@ -60,12 +61,14 @@ class MedicalBot:
             .read_timeout(30.0)  # Таймаут чтения 30 секунд
             .write_timeout(30.0)  # Таймаут записи 30 секунд
             .pool_timeout(30.0)  # Таймаут пула 30 секунд
+            .post_init(self._post_init)
             .build()
         )
         self.claude_service = ClaudeService(claude_api_key)
         self.archive_service = ArchiveService()
         self.document_queue_service = DocumentQueueService()
         self.user_contexts: Dict[int, BotContext] = {}
+        self.godok_state = GodokStateService()
 
         # Email сервис (опциональный)
         if smtp_user and smtp_password:
@@ -826,6 +829,12 @@ class MedicalBot:
                 )
             else:
                 user_context.clinic = ClinicMode.GODOK
+                # Запоминаем chat_id для пушей поллера. Если уже сохранён —
+                # перезаписываем (на случай если врач сменил телеграм-аккаунт).
+                chat_id_now = query.message.chat.id
+                if self.godok_state.doctor_chat_id != chat_id_now:
+                    self.godok_state.set_doctor_chat_id(chat_id_now)
+                    print(f"[godok-poller] doctor_chat_id зарегистрирован: {chat_id_now}")
                 await query.message.reply_text(
                     "✅ Выбран режим \"ГОДОК\" (Битрикс24)\n\n"
                     "Отправьте данные пациента текстом:\n"
@@ -842,6 +851,14 @@ class MedicalBot:
 
         elif data.startswith("godok_pick_deal_"):
             await self._handle_godok_deal_choice(query.message, user_context, data)
+
+        elif data.startswith("godok_pickup_"):
+            try:
+                deal_id = int(data.rsplit("_", 1)[-1])
+            except ValueError:
+                await query.message.reply_text("❌ Некорректный ID сделки.")
+                return
+            await self._handle_godok_pickup(query.message, user_context, deal_id)
 
         elif data == "godok_confirm_write":
             await self._handle_godok_confirm(query.message, user_context)
@@ -1085,6 +1102,11 @@ class MedicalBot:
         text = update.message.text
 
         try:
+            # ГОДОК: ответ на «укажите должность» по новой сделке из «Больничных листов»
+            if user_context.state == BotState.GODOK_AWAITING_POSITION:
+                await self._handle_godok_position(update.message, user_context, text)
+                return
+
             # ГОДОК: правки к сгенерированной карточке
             if user_context.state == BotState.GODOK_AWAITING_CORRECTIONS:
                 await self._handle_godok_corrections(update.message, user_context, text)
@@ -1873,6 +1895,246 @@ class MedicalBot:
         user_context.godok_message_time = None
         user_context.patient_data = None
         user_context.examination_photos = None
+        user_context.godok_pickup_deal = None
+
+    # ──────────── Поллер «Больничные листы» ────────────
+
+    GODOK_POLL_INTERVAL_SEC = 300  # 5 минут
+    GODOK_DOCTOR_NAME_FRAGMENT = "Гаджимурадлы"  # фильтр UF_CRM_1601396897
+
+    async def _post_init(self, application):
+        """Запускается после инициализации Application — поднимает фоновый поллер."""
+        if not self.bitrix_service:
+            print("[godok-poller] не запущен: Битрикс24 не настроен")
+            return
+        asyncio.create_task(self._godok_poller_loop())
+        print("[godok-poller] запущен (интервал 5 мин)")
+
+    async def _godok_poller_loop(self):
+        """Бесконечный цикл — раз в 5 мин проверяет новые сделки в воронке 14."""
+        # Первая итерация — небольшая задержка, чтобы Application успел подняться.
+        await asyncio.sleep(15)
+        while True:
+            try:
+                await self._godok_poller_tick()
+            except Exception as e:
+                print(f"[godok-poller] ошибка тика: {e}")
+            await asyncio.sleep(self.GODOK_POLL_INTERVAL_SEC)
+
+    async def _godok_poller_tick(self):
+        """Один проход поллера: ищет новые заявки и шлёт уведомления."""
+        chat_id = self.godok_state.doctor_chat_id
+        if not chat_id:
+            # Без зарегистрированного врача шлём только в лог.
+            print("[godok-poller] doctor_chat_id ещё не задан — пропуск")
+            return
+
+        last_seen = self.godok_state.last_seen_deal_id
+        # На первом запуске инициализируем last_seen текущим максимумом, чтобы
+        # не сыпать врачу 50 старых заявок.
+        if last_seen == 0:
+            try:
+                init_max = await asyncio.to_thread(
+                    self.bitrix_service.get_max_deal_id_for_doctor,
+                    self.GODOK_DOCTOR_NAME_FRAGMENT,
+                )
+            except BitrixError as e:
+                print(f"[godok-poller] init max ID failed: {e}")
+                return
+            self.godok_state.set_last_seen_deal_id(init_max)
+            print(f"[godok-poller] инициализация: last_seen_deal_id = {init_max}")
+            return
+
+        try:
+            new_deals = await asyncio.to_thread(
+                self.bitrix_service.find_new_doctor_deals,
+                self.GODOK_DOCTOR_NAME_FRAGMENT,
+                last_seen,
+            )
+        except BitrixError as e:
+            print(f"[godok-poller] crm.deal.list failed: {e}")
+            return
+
+        if not new_deals:
+            return
+
+        print(f"[godok-poller] найдено новых сделок: {len(new_deals)}")
+        for deal in new_deals:
+            try:
+                await self._notify_new_deal(chat_id, deal)
+            except Exception as e:
+                print(f"[godok-poller] не удалось уведомить о сделке #{deal.get('ID')}: {e}")
+                # Не двигаем last_seen, чтобы попробовать позже
+                return
+            try:
+                self.godok_state.set_last_seen_deal_id(int(deal["ID"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+
+    async def _notify_new_deal(self, chat_id: int, deal: Dict):
+        """Отправляет в Telegram уведомление о новой заявке + кнопку «Указать должность»."""
+        title = deal.get("TITLE") or "(без названия)"
+        diagnosis = deal.get("UF_CRM_1601395840") or "—"
+        workplace = deal.get("UF_CRM_1601396599") or "—"
+        eln_from = (deal.get("UF_CRM_1601396409") or "")[:10]
+        eln_to = (deal.get("UF_CRM_1601396467") or "")[:10]
+        eln_str = f"{eln_from} → {eln_to}" if eln_from and eln_to else "—"
+
+        deal_id = deal.get("ID")
+        text = (
+            f"📋 Новая заявка #{deal_id} — *{self._md_escape(title)}*\n"
+            f"Диагноз: {self._md_escape(diagnosis)}\n"
+            f"Место работы: {self._md_escape(workplace)}\n"
+            f"ЭЛН: {eln_str}\n\n"
+            f"Нажмите, чтобы заполнить должность и продолжить."
+        )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("💼 Указать должность", callback_data=f"godok_pickup_{deal_id}")
+        ]])
+        await self.application.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=kb,
+            parse_mode="Markdown",
+        )
+
+    @staticmethod
+    def _md_escape(text: str) -> str:
+        """Минимальный escape для Markdown в Telegram (символы *, _, [, ])."""
+        if not text:
+            return ""
+        for ch in ("\\", "*", "_", "[", "]", "`"):
+            text = text.replace(ch, f"\\{ch}")
+        return text
+
+    async def _handle_godok_pickup(self, message, user_context: BotContext, deal_id: int):
+        """Доктор нажал «Указать должность» — загружаем сделку и спрашиваем должность."""
+        if not self.bitrix_service:
+            await message.reply_text("❌ Битрикс24 не настроен.")
+            return
+        try:
+            deal = await asyncio.to_thread(self.bitrix_service.get_deal, deal_id)
+        except BitrixError as e:
+            await message.reply_text(f"❌ Не удалось загрузить сделку #{deal_id}: {e}")
+            return
+        if not deal:
+            await message.reply_text(f"❌ Сделка #{deal_id} не найдена.")
+            return
+
+        # Если уже есть должность — отдельный путь.
+        existing_position = deal.get(BitrixService.POSITION_FIELD_CODE)
+        user_context.godok_pickup_deal = {
+            "id": int(deal["ID"]),
+            "title": deal.get("TITLE", ""),
+            "diagnosis": deal.get("UF_CRM_1601395840", ""),
+            "workplace": deal.get("UF_CRM_1601396599", ""),
+            "position": existing_position or "",
+            "eln_from": (deal.get("UF_CRM_1601396409") or "")[:10],
+            "eln_to": (deal.get("UF_CRM_1601396467") or "")[:10],
+            "complaints": deal.get(BitrixService.COMPLAINTS_FIELD_CODE) or "",
+        }
+        user_context.clinic = ClinicMode.GODOK
+        user_context.state = BotState.GODOK_AWAITING_POSITION
+        user_context.godok_message_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+03:00")
+
+        prompt = "Введите должность пациента (например: «эксперт», «менеджер», «программист»):"
+        if existing_position:
+            prompt = f"Текущая должность: {existing_position}\nОтправьте новое значение или «=», чтобы оставить как есть:"
+        await message.reply_text(prompt)
+
+    async def _handle_godok_position(self, message, user_context: BotContext, position: str):
+        """Получили должность от врача → пишем в Б24 и при необходимости запускаем AI-flow."""
+        pickup = user_context.godok_pickup_deal
+        if not pickup:
+            await message.reply_text("❌ Контекст утерян, начните заново через уведомление.")
+            user_context.state = BotState.IDLE
+            return
+        deal_id = int(pickup["id"])
+        position = (position or "").strip()
+
+        # «=» — оставить текущее значение, не перезаписывать.
+        if position == "=":
+            position = pickup.get("position", "")
+        else:
+            try:
+                ok = await asyncio.to_thread(
+                    self.bitrix_service.update_deal,
+                    deal_id,
+                    {BitrixService.POSITION_FIELD_CODE: position},
+                )
+                if not ok:
+                    await message.reply_text("⚠️ Битрикс24 не подтвердил запись должности.")
+                    return
+            except BitrixError as e:
+                await message.reply_text(f"❌ Битрикс24 отклонил обновление: {e}")
+                return
+            await message.reply_text(f"✅ Должность «{position}» записана в сделку #{deal_id}.")
+            pickup["position"] = position
+
+        # Если поле «Жалобы» пустое — запускаем AI-flow (сделка нуждается в наполнении).
+        if not pickup.get("complaints"):
+            await self._start_godok_flow_from_pickup(message, user_context)
+        else:
+            # Поля карточки уже заполнены ранее — переходим к фото.
+            await message.reply_text("ℹ️ Поля карточки уже заполнены ранее, AI-генерацию пропускаю.")
+            user_context.godok_deal_id = deal_id
+            user_context.godok_deal_title = pickup.get("title", "")
+            user_context.state = BotState.GODOK_AWAITING_PHOTO
+            user_context.examination_photos = []
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("📷 Добавить фото рекомендации", callback_data="godok_add_photos"),
+                InlineKeyboardButton("⏭ Пропустить", callback_data="godok_skip_photos"),
+            ]])
+            await message.reply_text(
+                "📷 Добавить фото в раздел «Фото рекомендации»?",
+                reply_markup=kb,
+            )
+
+    async def _start_godok_flow_from_pickup(self, message, user_context: BotContext):
+        """Запускает AI-flow на основе данных уже найденной сделки (без поиска)."""
+        pickup = user_context.godok_pickup_deal
+        if not pickup:
+            await message.reply_text("❌ Нет данных для запуска AI-flow.")
+            return
+
+        # Парсим даты ЭЛН ISO → ru
+        def _iso_to_ru(s: str) -> Optional[str]:
+            if not s:
+                return None
+            try:
+                return datetime.strptime(s[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+            except ValueError:
+                return None
+
+        eln_start_ru = _iso_to_ru(pickup.get("eln_from", ""))
+        eln_end_ru = _iso_to_ru(pickup.get("eln_to", ""))
+
+        patient_data = PatientData(
+            full_name=pickup.get("title", ""),
+            birth_date="",
+            diagnosis=pickup.get("diagnosis", ""),
+            workplace=pickup.get("workplace") or None,
+            position=pickup.get("position") or None,
+            eln_start_date=eln_start_ru,
+            eln_end_date=eln_end_ru,
+            eln_refused=False,
+            examination_date=datetime.now().strftime("%d.%m.%Y"),
+        )
+        user_context.godok_deal_id = int(pickup["id"])
+        user_context.godok_deal_title = pickup.get("title", "")
+        user_context.patient_data = {
+            "full_name": patient_data.full_name,
+            "birth_date": patient_data.birth_date,
+            "diagnosis": patient_data.diagnosis,
+            "workplace": patient_data.workplace,
+            "position": patient_data.position,
+            "eln_start_date": patient_data.eln_start_date,
+            "eln_end_date": patient_data.eln_end_date,
+            "eln_refused": False,
+            "is_student": False,
+        }
+        await self._generate_godok_preview(message, user_context, patient_data)
+
 
     def _parse_text_data(self, text: str) -> Dict[str, str]:
         """Парсинг текстовых данных пациента"""

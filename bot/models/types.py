@@ -22,6 +22,7 @@ class BotState(str, Enum):
     GODOK_AWAITING_CONFIRMATION = "godok_awaiting_confirmation"  # Подтверждение записи в Б24
     GODOK_AWAITING_CORRECTIONS = "godok_awaiting_corrections"  # Ожидание текста правок
     GODOK_AWAITING_PHOTO = "godok_awaiting_photo"  # Ожидание фото для поля «Фото рекомендации»
+    GODOK_AWAITING_POSITION = "godok_awaiting_position"  # Ждём должность по сделке из «Больничных листов»
 
 
 @dataclass
@@ -87,3 +88,4 @@ class BotContext:
     godok_fields: Optional[dict] = None  # {UF_CRM_xxx: value, ...} — готово к crm.deal.update
     godok_candidates: Optional[list] = None  # Найденные сделки при выборе из нескольких
     godok_message_time: Optional[str] = None  # Время отправки сообщения врачом (для "Фактической даты")
+    godok_pickup_deal: Optional[dict] = None  # Сделка из «Больничных листов», по которой ждём должность

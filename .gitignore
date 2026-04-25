@@ -5,6 +5,7 @@ dist/
 .DS_Store
 data/archive/*
 !data/archive/.gitkeep
+data/bitrix/godok_state.json
 __pycache__/
 *.pyc
 *.pyo

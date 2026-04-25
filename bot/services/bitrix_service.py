@@ -94,6 +94,10 @@ class BitrixService:
     """Минимальный клиент Б24 REST: поиск сделки, чтение, обновление."""
 
     GODOK_CATEGORY_ID = 10
+    SICK_LEAVE_CATEGORY_ID = 14  # Воронка «БОЛЬНИЧНЫЕ ЛИСТЫ»
+    DOCTOR_FIELD_CODE = "UF_CRM_1601396897"  # «Назначенный врач» (строка)
+    POSITION_FIELD_CODE = "UF_CRM_1601396588"  # «Должность пациента»
+    COMPLAINTS_FIELD_CODE = "UF_CRM_1601394859"  # «Жалобы пациента»
     # Ретраи на 5xx и сетевые сбои: попытки и backoff (секунды).
     RETRY_BACKOFFS = (1, 2, 4, 8)
     RETRY_STATUSES = frozenset({500, 502, 503, 504})
@@ -350,3 +354,63 @@ class BitrixService:
         value: Any = encoded if is_multiple else encoded[0]
         ok = self._call("crm.deal.update", {"id": deal_id, "fields": {field_code: value}})
         return bool(ok)
+
+    def find_new_doctor_deals(
+        self,
+        doctor_name_fragment: str,
+        since_id: int = 0,
+        category_id: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Сделки в воронке «БОЛЬНИЧНЫЕ ЛИСТЫ» (CATEGORY_ID=14 по умолчанию),
+        назначенные на доктора по подстроке в поле UF_CRM_1601396897, c ID > since_id.
+        """
+        cat = self.SICK_LEAVE_CATEGORY_ID if category_id is None else category_id
+        result = self._call(
+            "crm.deal.list",
+            {
+                "filter": {
+                    "CATEGORY_ID": cat,
+                    f"%{self.DOCTOR_FIELD_CODE}": doctor_name_fragment,
+                    ">ID": since_id,
+                },
+                "order": {"ID": "ASC"},
+                "select": [
+                    "ID", "TITLE", "DATE_CREATE", "BEGINDATE", "STAGE_ID",
+                    self.DOCTOR_FIELD_CODE,
+                    "UF_CRM_1601395840",  # диагноз
+                    self.POSITION_FIELD_CODE,  # должность
+                    "UF_CRM_1601396599",  # место работы
+                    "UF_CRM_1601396409",  # ЭЛН с
+                    "UF_CRM_1601396467",  # ЭЛН по
+                    self.COMPLAINTS_FIELD_CODE,  # жалобы (флаг — был ли AI-flow)
+                ],
+            },
+        )
+        return result or []
+
+    def get_max_deal_id_for_doctor(
+        self,
+        doctor_name_fragment: str,
+        category_id: Optional[int] = None,
+    ) -> int:
+        """Текущий максимальный ID сделки в воронке для инициализации поллера."""
+        cat = self.SICK_LEAVE_CATEGORY_ID if category_id is None else category_id
+        result = self._call(
+            "crm.deal.list",
+            {
+                "filter": {
+                    "CATEGORY_ID": cat,
+                    f"%{self.DOCTOR_FIELD_CODE}": doctor_name_fragment,
+                },
+                "order": {"ID": "DESC"},
+                "select": ["ID"],
+                "start": 0,
+            },
+        ) or []
+        if not result:
+            return 0
+        try:
+            return int(result[0]["ID"])
+        except (KeyError, TypeError, ValueError):
+            return 0
