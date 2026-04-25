@@ -1526,9 +1526,9 @@ class MedicalBot:
         except ValueError:
             return datetime.now().strftime("%Y-%m-%d")
 
-    def _build_godok_context_values(self, patient_data: PatientData, message_time_iso: str) -> Dict[str, str]:
+    def _build_godok_context_values(self, patient_data: PatientData, message_time_iso: str) -> Dict[str, Any]:
         """Собирает значения context-полей карточки (дата вызова, врач, ЭЛН, работа)."""
-        ctx: Dict[str, str] = {}
+        ctx: Dict[str, Any] = {}
         ctx["UF_CRM_1601396238"] = message_time_iso  # Фактическая дата и время выполнения вызова
         ctx["UF_CRM_1601396897"] = self.bitrix_service.assigned_doctor()  # Назначенный врач
         if patient_data.workplace:
@@ -1536,15 +1536,29 @@ class MedicalBot:
         if patient_data.position:
             ctx["UF_CRM_1601396588"] = patient_data.position
         if patient_data.eln_start_date and patient_data.eln_end_date and not patient_data.eln_refused:
+            end_iso = self._date_ru_to_iso(patient_data.eln_end_date)
             ctx["UF_CRM_1601396409"] = self._date_ru_to_iso(patient_data.eln_start_date)
-            ctx["UF_CRM_1601396467"] = self._date_ru_to_iso(patient_data.eln_end_date)
-            # Явка в поликлинику — на следующий день после окончания ЭЛН
-            try:
-                end_dt = datetime.strptime(patient_data.eln_end_date, "%d.%m.%Y")
-                from datetime import timedelta
-                ctx["UF_CRM_1601397346"] = (end_dt + timedelta(days=1)).strftime("%Y-%m-%d")
-            except ValueError:
-                pass
+            ctx["UF_CRM_1601396467"] = end_iso
+            # Явка в поликлинику = дата окончания ЭЛН (ранее ошибочно ставился +1 день).
+            ctx["UF_CRM_1601397346"] = end_iso
+
+        # Тип ЛН (enumeration: «Отказ» / «Первичный» / «Продолжение»). Поле ищется
+        # динамически через crm.deal.fields, опции — по совпадению ключевых слов.
+        try:
+            eln_field = self.bitrix_service.find_eln_type_field()
+        except Exception as e:
+            print(f"[godok] не удалось найти ЛН-поле: {e}")
+            eln_field = None
+        if eln_field and eln_field.get("code"):
+            opts = eln_field.get("options") or {}
+            if patient_data.eln_refused:
+                opt_id = opts.get("refusal")
+            elif patient_data.eln_start_date and patient_data.eln_end_date:
+                opt_id = opts.get("primary")
+            else:
+                opt_id = None
+            if opt_id is not None:
+                ctx[eln_field["code"]] = opt_id
         return ctx
 
     async def _start_godok_flow(self, message, user_context: BotContext, patient_data: PatientData):

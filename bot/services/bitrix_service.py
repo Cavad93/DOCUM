@@ -113,6 +113,7 @@ class BitrixService:
         self.fields_map: Dict[str, Any] = json.loads(fields_map_path.read_text(encoding="utf-8"))
         self._deal_fields_cache: Optional[Dict[str, Any]] = None
         self._photo_field_cache: Optional[str] = None
+        self._eln_type_field_cache: Optional[Dict[str, Any]] = None
 
     def _call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Any:
         """
@@ -216,15 +217,17 @@ class BitrixService:
         Собирает финальный словарь для crm.deal.update из:
         - ai_values: {field_code: value} (от Claude),
         - context_values: {field_code: value} (дата, врач, работа, ЭЛН).
-        Шаблонные и ручные поля НЕ включаются.
+        Шаблонные поля карты — НЕ включаем (бот их не трогает).
+        AI-значения проходят whitelist по ai_fields (защита от галлюцинаций).
+        Context-значения формируем мы сами — берём всё, что положили туда.
         """
         payload: Dict[str, Any] = {}
         for code in self.fields_map["ai_fields"].keys():
             if code in ai_values and ai_values[code] not in (None, ""):
                 payload[code] = ai_values[code]
-        for code in self.fields_map["context_fields"].keys():
-            if code in context_values and context_values[code] not in (None, ""):
-                payload[code] = context_values[code]
+        for code, value in (context_values or {}).items():
+            if value not in (None, ""):
+                payload[code] = value
         return payload
 
     def ai_field_specs(self) -> Dict[str, Any]:
@@ -265,6 +268,62 @@ class BitrixService:
                 self._photo_field_cache = code
                 return code
         self._photo_field_cache = ""
+        return None
+
+    def find_eln_type_field(self) -> Optional[Dict[str, Any]]:
+        """
+        Ищет UF_CRM_* enumeration-поле для типа ЛН (отказ/первичный/продолжение).
+        Возвращает {'code': UF_..., 'options': {'refusal': id|None, 'primary': id|None,
+        'continuation': id|None}} или None, если поле не найдено.
+
+        Приоритет: explicit-конфиг fields_map['eln_type_field'] = {'code': ..., 'options': {...}}.
+        """
+        explicit = self.fields_map.get("eln_type_field")
+        if explicit and isinstance(explicit, dict) and explicit.get("code"):
+            return explicit
+        if self._eln_type_field_cache is not None:
+            return self._eln_type_field_cache or None
+
+        # Ключевые слова в названии поля и в его опциях.
+        label_kws = ("листок нетруд", "лн ", "нетрудоспособ", "продление")
+        opt_keywords = {
+            "refusal": ("отказ",),
+            "primary": ("первичн",),
+            "continuation": ("продолж", "продлен"),
+        }
+
+        for code, meta in self.list_deal_fields().items():
+            if not code.startswith("UF_CRM_"):
+                continue
+            if str(meta.get("type", "")).lower() != "enumeration":
+                continue
+            labels = meta.get("formLabel") or meta.get("title") or ""
+            if isinstance(labels, dict):
+                label_text = " ".join(str(v) for v in labels.values())
+            else:
+                label_text = str(labels)
+            label_low = label_text.lower()
+            if not any(kw in label_low for kw in label_kws):
+                continue
+
+            options: Dict[str, Optional[int]] = {"refusal": None, "primary": None, "continuation": None}
+            for item in meta.get("items", []) or []:
+                value_low = str(item.get("VALUE", "")).lower()
+                try:
+                    item_id = int(item.get("ID"))
+                except (TypeError, ValueError):
+                    continue
+                for kind, kws in opt_keywords.items():
+                    if options[kind] is None and any(kw in value_low for kw in kws):
+                        options[kind] = item_id
+                        break
+
+            # Запоминаем только если нашли хотя бы одну подходящую опцию.
+            if any(v is not None for v in options.values()):
+                self._eln_type_field_cache = {"code": code, "options": options}
+                return self._eln_type_field_cache
+
+        self._eln_type_field_cache = {}
         return None
 
     @staticmethod
