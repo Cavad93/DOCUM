@@ -4,15 +4,50 @@
 """
 import base64
 import json
+import ssl
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.ssl_ import create_urllib3_context
 
 
 class BitrixError(Exception):
     """Ошибка вызова Битрикс24 REST."""
+
+
+class _LegacyTLSAdapter(HTTPAdapter):
+    """
+    HTTPAdapter с расширенным TLS-контекстом для совместимости с серверами,
+    у которых узкий cipher-list и/или требуется legacy-renegotiation.
+    Лечит SSLV3_ALERT_HANDSHAKE_FAILURE на дефолтном Python+OpenSSL.
+    """
+
+    CIPHERS = "DEFAULT:@SECLEVEL=1"
+
+    def _build_context(self) -> ssl.SSLContext:
+        ctx = create_urllib3_context(ciphers=self.CIPHERS)
+        # Расширяем шифры (на случай если create_urllib3_context перетёр)
+        try:
+            ctx.set_ciphers(self.CIPHERS)
+        except ssl.SSLError:
+            pass
+        # Разрешаем «небезопасное» legacy-переподключение, если флаг доступен
+        for opt_name in ("OP_LEGACY_SERVER_CONNECT",):
+            opt = getattr(ssl, opt_name, None)
+            if opt is not None:
+                ctx.options |= opt
+        return ctx
+
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs["ssl_context"] = self._build_context()
+        return super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, *args, **kwargs):
+        kwargs["ssl_context"] = self._build_context()
+        return super().proxy_manager_for(*args, **kwargs)
 
 
 class BitrixService:
@@ -28,6 +63,10 @@ class BitrixService:
             raise ValueError("BITRIX_WEBHOOK_URL не задан")
         self.webhook = webhook_url.rstrip("/")
         self._session = requests.Session()
+        # Кастомный TLS-адаптер: расширенные шифры + legacy-renegotiation.
+        # Нужен для серверов Bitrix24, где дефолтный Python/OpenSSL получает
+        # SSLV3_ALERT_HANDSHAKE_FAILURE.
+        self._session.mount("https://", _LegacyTLSAdapter())
 
         if fields_map_path is None:
             fields_map_path = Path(__file__).parent.parent.parent / "data" / "bitrix" / "godok_fields.json"
