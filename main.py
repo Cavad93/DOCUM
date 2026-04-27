@@ -17,8 +17,10 @@ from bot.telegram_bot import MedicalBot
 
 def main():
     """Главная функция запуска бота"""
-    # Загрузка переменных окружения
-    load_dotenv()
+    # Загрузка переменных окружения. override=True — значение из .env
+    # имеет приоритет над уже выставленной системной переменной (важно
+    # на Windows, где старая ANTHROPIC_API_KEY могла остаться после setx).
+    load_dotenv(override=True)
 
     # Проверка наличия необходимых переменных
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
