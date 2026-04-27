@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import certifi
 import requests
+import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
@@ -26,21 +27,40 @@ class BitrixError(Exception):
     """Ошибка вызова Битрикс24 REST."""
 
 
+def _bitrix_tls_verify_enabled() -> bool:
+    return os.getenv("BITRIX_TLS_VERIFY", "1") != "0"
+
+
 class _LegacyTLSAdapter(HTTPAdapter):
     """
     HTTPAdapter с расширенным TLS-контекстом для совместимости с серверами,
     у которых узкий cipher-list, требуется legacy-renegotiation, или CA
     подписан корпоративным/MITM-CA (Cisco Umbrella, Kaspersky и т.п.).
 
-    Сначала пробуем `truststore` — он использует нативный CryptoAPI Windows /
-    Security.framework macOS / системные пути Linux и видит ВСЕ установленные
-    в ОС CA. Это решает CERTIFICATE_VERIFY_FAILED от enterprise TLS-инспекторов.
-    Если truststore не установлен, fallback: load_default_certs + certifi.
+    Если BITRIX_TLS_VERIFY=0 — короткое замыкание: верификация отключается
+    полностью, без truststore (он на ряде версий игнорирует CERT_NONE).
+    Иначе пробуем truststore (нативный системный CA store), при отсутствии —
+    fallback: load_default_certs + certifi.
     """
 
     CIPHERS = "DEFAULT:@SECLEVEL=1"
 
     def _build_context(self) -> ssl.SSLContext:
+        # Короткое замыкание: явный escape-hatch — без проверки.
+        if not _bitrix_tls_verify_enabled():
+            ctx = create_urllib3_context(ciphers=self.CIPHERS)
+            try:
+                ctx.set_ciphers(self.CIPHERS)
+            except ssl.SSLError:
+                pass
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            for opt_name in ("OP_LEGACY_SERVER_CONNECT",):
+                opt = getattr(ssl, opt_name, None)
+                if opt is not None:
+                    ctx.options |= opt
+            return ctx
+
         used_truststore = False
         if _HAS_TRUSTSTORE:
             # truststore.SSLContext наследуется от ssl.SSLContext — set_ciphers
@@ -57,7 +77,6 @@ class _LegacyTLSAdapter(HTTPAdapter):
 
         loaded_any = used_truststore
         if not used_truststore:
-            # Fallback: системный store + Mozilla CA bundle
             try:
                 ctx.load_default_certs(purpose=ssl.Purpose.SERVER_AUTH)
                 loaded_any = True
@@ -69,9 +88,8 @@ class _LegacyTLSAdapter(HTTPAdapter):
             except Exception as e:
                 print(f"[bitrix-tls] certifi load failed: {e}")
 
-        # Escape-hatch: явное отключение или CA так и не нашлись.
-        if os.getenv("BITRIX_TLS_VERIFY", "1") == "0" or not loaded_any:
-            print("[bitrix-tls] ⚠️ TLS verification DISABLED (BITRIX_TLS_VERIFY=0 или CA bundle не загружен)")
+        if not loaded_any:
+            print("[bitrix-tls] ⚠️ CA bundle не загружен — TLS verification DISABLED")
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
 
@@ -107,6 +125,12 @@ class BitrixService:
             raise ValueError("BITRIX_WEBHOOK_URL не задан")
         self.webhook = webhook_url.rstrip("/")
         self._session = requests.Session()
+        if not _bitrix_tls_verify_enabled():
+            # При явном escape-hatch отключаем verify и на уровне requests, и
+            # глушим InsecureRequestWarning, чтобы лог не захламлять.
+            self._session.verify = False
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            print("[bitrix-tls] ⚠️ BITRIX_TLS_VERIFY=0 — TLS verification отключена")
         # Кастомный TLS-адаптер: расширенные шифры + legacy-renegotiation.
         # Нужен для серверов Bitrix24, где дефолтный Python/OpenSSL получает
         # SSLV3_ALERT_HANDSHAKE_FAILURE.
