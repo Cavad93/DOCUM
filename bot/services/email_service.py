@@ -26,7 +26,10 @@ class EmailService:
         self.smtp_port = smtp_port
         self.smtp_user = smtp_user
         self.smtp_password = smtp_password
-        self.recipients_file = Path("./data/email_recipients.json")
+        # Абсолютный путь к корню проекта (./data/...) — иначе при запуске
+        # из другой cwd файл создаётся в неправильном месте, и старые
+        # списки «теряются».
+        self.recipients_file = Path(__file__).parent.parent.parent / "data" / "email_recipients.json"
         self._ensure_recipients_file()
 
     def _ensure_recipients_file(self) -> None:
